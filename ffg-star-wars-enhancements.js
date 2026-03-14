@@ -13,6 +13,10 @@ import {
 import { init as strain_reminder_init, strain_reminder } from "./scripts/strain_reminder.js";
 import { init as talent_checker_init, talent_checker } from "./scripts/talent_checker.js";
 import { init as shop_generator_init, ready as shop_sheet_ready } from "./scripts/shop_sheet.js";
+import {
+    init as talent_skill_association_init,
+    talent_skill_association_hooks,
+} from "./scripts/talentsAutomation/talent_skill_association.js";
 import { init as talent_bulk_update_init } from "./scripts/talentsAutomation/talent_bulk_update.js";
 import { init as special_ammo_init, hooks as special_ammo_hooks } from "./scripts/specialAmmo/special_ammo.js";
 import { stim_sync } from "./scripts/stim_sync.js";
