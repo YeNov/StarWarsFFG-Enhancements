@@ -335,7 +335,7 @@ async function fetch_suggestions(results) {
         }
 
         // separate context vs non-context entries
-        let nonContextSuggestions = tmp_suggestions.filter((s) => !s.context);
+        let nonContextSuggestions = tmp_suggestions.filter((s) => !s.context).sort((a, b) => a.required - b.required);
         let contextSuggestions = tmp_suggestions.filter((s) => s.context);
 
         // collect context entries across all categories, grouped by context name
