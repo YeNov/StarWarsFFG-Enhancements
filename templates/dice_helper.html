@@ -8,4 +8,16 @@
         {{this.text}}<br>
     {{/each}}
 {{/each}}
+{{#each this.contextGroups}}
+    <details class="dice-helper-context">
+        <summary>{{this.name}}</summary>
+        <div class="dice-helper-context-content">
+            {{#each this.entries}}
+                {{#times this.required}}[{{this.category}}]{{/times}}
+                :&nbsp;
+                {{this.text}}<br>
+            {{/each}}
+        </div>
+    </details>
+{{/each}}
 </span>

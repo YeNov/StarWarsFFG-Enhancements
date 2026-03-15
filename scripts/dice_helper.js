@@ -162,14 +162,7 @@ export function dice_helper() {
             html.on("click", ".effg-die-result", async function (event) {
                 event.preventDefault();
                 event.stopPropagation();
-                
-                // messageData is the ChatMessage document, so we need to wrap it for dice_helper_clicked
-                // Create a wrapper object that matches what dice_helper_clicked expects
-                let wrapper = {
-                    message: messageData,
-                    _id: messageData._id
-                };
-                await dice_helper_clicked(wrapper);
+                await dice_helper_clicked(app);
             });
         }
     });
@@ -239,13 +232,13 @@ async function dice_helper_clicked(object) {
     log(feature_name, JSON.stringify(data));
 
     let skill = data["skill"];
-    let suggestions = await fetch_suggestions(data);
+    let result = await fetch_suggestions(data);
 
     // Get the actual ChatMessage document from the collection
     // Handle both cases: wrapper object with message property, or direct ChatMessage document
     let msg = null;
     let messageId = null;
-    
+
     if (object?.message?._id) {
         // Wrapper object case (from socket or renderChatMessage wrapper)
         messageId = object.message._id;
@@ -261,13 +254,14 @@ async function dice_helper_clicked(object) {
     } else {
         return;
     }
-    
+
     if (!msg) {
         return;
     }
-    
+
     let context = {
-        suggestions: suggestions,
+        suggestions: result.suggestions,
+        contextGroups: result.contextGroups,
         skill: skill,
     };
     let newContent = (await getTemplate("modules/ffg-star-wars-enhancements/templates/dice_helper.html"))(
@@ -312,8 +306,13 @@ async function fetch_suggestions(results) {
 
     // build out an array of the suggestions
     let suggestions = [];
+    let contextGroupMap = {};
+    let contextGroupOrder = [];
     for (var x = 0; x < suggestion_categories.length; x++) {
         let category = suggestion_categories[x];
+        if (!data[skill][category] || !Array.isArray(data[skill][category])) {
+            continue;
+        }
         // build an array of the suggestions for the specific category we're looking at now
         if ((category === "ad" && results["tr"] > 0) || (category === "th" && results["de"] > 0)) {
             var tmp_suggestions = data[skill][category];
@@ -322,15 +321,32 @@ async function fetch_suggestions(results) {
                 (suggestion) => suggestion.required <= results[category]
             );
         }
-        // only add the array if it's been populated
-        if (tmp_suggestions.length > 0) {
+
+        // separate context vs non-context entries
+        let nonContextSuggestions = tmp_suggestions.filter((s) => !s.context);
+        let contextSuggestions = tmp_suggestions.filter((s) => s.context);
+
+        // collect context entries across all categories, grouped by context name
+        for (let s of contextSuggestions) {
+            if (!contextGroupMap[s.context]) {
+                contextGroupMap[s.context] = [];
+                contextGroupOrder.push(s.context);
+            }
+            contextGroupMap[s.context].push({ text: s.text, required: s.required, category: category });
+        }
+
+        if (nonContextSuggestions.length > 0) {
             suggestions.push({
                 category: category,
-                suggestions: tmp_suggestions,
+                suggestions: nonContextSuggestions,
             });
         }
     }
-    return suggestions;
+
+    // build combined context groups
+    let contextGroups = contextGroupOrder.map((name) => ({ name: name, entries: contextGroupMap[name] }));
+
+    return { suggestions, contextGroups };
 }
 
 function is_supported_skill(skill, data) {
@@ -386,30 +402,61 @@ function load_data() {
     }
     log(feature_name, "Found journal " + journal_name);
 
-    let journal_pages = journal[0].pages.filter((i) => i.name === "dice_helper");
-    if (journal_pages.length <= 0) {
+    let journal_pages = journal[0].pages.contents;
+    if (!journal_pages || journal_pages.length <= 0) {
         ui.notifications.warn("Failed to find journal with correct pages - make sure it's created or something");
         log(feature_name, "Unable to find journal with correct pages");
         return {};
     }
 
-    try {
-        let data = journal_pages[0].text.content.replace("<p>", "").replace("</p>", "");
-        let jsondata = JSON.parse(data.replace('"', '"'));
-        // Let translate the skill names if possible
-        Object.keys(jsondata).forEach((skillname) => {
-            if (skillname.includes("SWFFG.")) {
-                let localized = game.i18n.localize(skillname);
-                let localizedskill = localized.toLowerCase().replace(/\s+/g, " ").trim();
-                Object.defineProperty(jsondata, localizedskill, Object.getOwnPropertyDescriptor(jsondata, skillname));
-                delete jsondata[skillname];
-            }
-        });
-        return jsondata;
-    } catch (err) {
-        ui.notifications.warn("Dice helper: invalid data detected in journal");
+    let jsondata = {};
+    for (let page of journal_pages) {
+        if (!page.text || !page.text.content) {
+            continue;
+        }
+        try {
+            let data = page.text.content.replace(/<\/?p>/g, "");
+            let pageData = JSON.parse(data.replace(/\u201c|\u201d/g, '"'));
+            // merge page data into combined result, expanding comma-separated keys
+            Object.keys(pageData).forEach((key) => {
+                let keys = key.split(",").map((k) => k.trim());
+                for (let k of keys) {
+                    if (jsondata[k]) {
+                        // merge arrays for each category
+                        for (let cat of ["su", "ad", "tr", "fa", "th", "de"]) {
+                            if (pageData[key][cat]) {
+                                if (!jsondata[k][cat]) {
+                                    jsondata[k][cat] = [];
+                                }
+                                jsondata[k][cat] = jsondata[k][cat].concat(pageData[key][cat]);
+                            }
+                        }
+                    } else {
+                        jsondata[k] = JSON.parse(JSON.stringify(pageData[key]));
+                    }
+                }
+            });
+            log(feature_name, "Loaded data from page: " + page.name);
+        } catch (err) {
+            log(feature_name, "Skipping page '" + page.name + "': not valid dice helper JSON");
+        }
+    }
+
+    if (Object.keys(jsondata).length === 0) {
+        ui.notifications.warn("Dice helper: no valid data found in any journal page");
         return {};
     }
+
+    // Translate skill names if possible
+    Object.keys(jsondata).forEach((skillname) => {
+        if (skillname.includes("SWFFG.")) {
+            let localized = game.i18n.localize(skillname);
+            let localizedskill = localized.toLowerCase().replace(/\s+/g, " ").trim();
+            Object.defineProperty(jsondata, localizedskill, Object.getOwnPropertyDescriptor(jsondata, skillname));
+            delete jsondata[skillname];
+        }
+    });
+    return jsondata;
 }
 
 export async function create_and_populate_journal() {

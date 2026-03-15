@@ -1,3 +1,23 @@
 .effg-die-result {
     cursor: pointer;
 }
+
+.dice-helper-context {
+    margin: 4px 0;
+    border-left: 2px solid #444;
+    padding-left: 6px;
+}
+
+.dice-helper-context summary {
+    cursor: pointer;
+    font-style: italic;
+    color: #4b4a44;
+}
+
+.dice-helper-context summary:hover {
+    color: #000;
+}
+
+.dice-helper-context-content {
+    padding-left: 4px;
+}
