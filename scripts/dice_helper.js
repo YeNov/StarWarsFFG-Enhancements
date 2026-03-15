@@ -1,6 +1,8 @@
 import { log_msg as log } from "./util.js";
 
 let feature_name = "dice_helper";
+let _cachedData = null;
+let _cacheJournalName = null;
 
 export function init() {
     log(feature_name, "Initializing");
@@ -36,7 +38,17 @@ async function socket_listener(data) {
 
 export function dice_helper() {
     game.socket.on("module.ffg-star-wars-enhancements", socket_listener);
-    
+
+    // Invalidate cached data only when the configured dice helper journal is modified
+    const invalidateIfDiceHelperJournal = (page) => {
+        if (_cachedData && page?.parent?.name === _cacheJournalName) {
+            _cachedData = null;
+        }
+    };
+    Hooks.on("updateJournalEntryPage", invalidateIfDiceHelperJournal);
+    Hooks.on("createJournalEntryPage", invalidateIfDiceHelperJournal);
+    Hooks.on("deleteJournalEntryPage", invalidateIfDiceHelperJournal);
+
     // Use document-level event delegation for button clicks (works after page refresh)
     $(document).off("click", ".effg-die-result"); // Remove any existing handlers
     $(document).on("click", ".effg-die-result", async function (event) {
@@ -393,6 +405,13 @@ function load_data() {
      *  }
      */
     let journal_name = game.settings.get("ffg-star-wars-enhancements", "dice-helper-data");
+
+    // return cached data if available
+    if (_cachedData && _cacheJournalName === journal_name) {
+        log(feature_name, "Returning cached data for " + journal_name);
+        return _cachedData;
+    }
+
     let journal = game.journal.filter((journal) => journal.name === journal_name);
 
     if (journal.length <= 0) {
@@ -456,6 +475,10 @@ function load_data() {
             delete jsondata[skillname];
         }
     });
+
+    _cachedData = jsondata;
+    _cacheJournalName = journal_name;
+    log(feature_name, "Cached data for " + journal_name);
     return jsondata;
 }
 
