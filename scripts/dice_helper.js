@@ -1,6 +1,8 @@
 import { log_msg as log } from "./util.js";
 
 let feature_name = "dice_helper";
+let _cachedData = null;
+let _cacheJournalName = null;
 
 export function init() {
     log(feature_name, "Initializing");
@@ -35,22 +37,28 @@ async function socket_listener(data) {
 }
 
 export function dice_helper() {
-    log(feature_name, "[FFG Dice Helper] dice_helper() registering socket and click handlers");
     game.socket.on("module.ffg-star-wars-enhancements", socket_listener);
-    
+
+    // Invalidate cached data only when the configured dice helper journal is modified
+    const invalidateIfDiceHelperJournal = (page) => {
+        if (_cachedData && page?.parent?.name === _cacheJournalName) {
+            _cachedData = null;
+        }
+    };
+    Hooks.on("updateJournalEntryPage", invalidateIfDiceHelperJournal);
+    Hooks.on("createJournalEntryPage", invalidateIfDiceHelperJournal);
+    Hooks.on("deleteJournalEntryPage", invalidateIfDiceHelperJournal);
+
     // Use document-level event delegation for button clicks (works after page refresh)
     $(document).off("click", ".effg-die-result"); // Remove any existing handlers
     $(document).on("click", ".effg-die-result", async function (event) {
-        log(feature_name, "[FFG Dice Helper] Document-level click on .effg-die-result", { target: event.target, currentTarget: event.currentTarget });
         event.preventDefault();
         event.stopPropagation();
         
         // Find the message element that contains this button
         let messageElement = $(this).closest(".message");
-        log(feature_name, "[FFG Dice Helper] messageElement from .closest('.message')", { length: messageElement.length, element: messageElement[0] });
         
         if (messageElement.length === 0) {
-            console.warn("[FFG Dice Helper] No .message ancestor found for button; click may be on detached or wrong DOM.");
             return;
         }
         
@@ -63,33 +71,26 @@ export function dice_helper() {
                 messageId = messageIdAttr.replace("chat-message-", "");
             }
         }
-        log(feature_name, "[FFG Dice Helper] messageId", { messageId, messageElementId: messageElement.attr("id"), dataMessageId: messageElement.attr("data-message-id") });
         
         if (!messageId) {
-            console.warn("[FFG Dice Helper] Could not resolve messageId from message element.");
             return;
         }
         
         // Get the message document
         let msg = game.messages.get(messageId);
-        log(feature_name, "[FFG Dice Helper] game.messages.get(messageId)", { messageId, msg: !!msg });
-        
         if (!msg) {
-            console.warn("[FFG Dice Helper] No message in game.messages for id:", messageId);
             return;
         }
         
-        // Create wrapper for dice_helper_clicked (v13: use .id if present)
+        // Create wrapper for dice_helper_clicked
         let wrapper = {
             message: msg,
-            _id: msg.id ?? msg._id
+            _id: msg._id
         };
-        log(feature_name, "[FFG Dice Helper] Calling dice_helper_clicked from document handler");
         await dice_helper_clicked(wrapper);
     });
     
     Hooks.on("createChatMessage", (messageData, meta_data, id) => {
-        log(feature_name, "[FFG Dice Helper] createChatMessage fired", { id, hasFlavor: !!messageData?.flavor, hasRolls: !!(messageData?.rolls?.length) });
         if (game.settings.get("ffg-star-wars-enhancements", "dice-helper")) {
             if (is_roll(messageData) === true) {
                 // as of some v10 version, chat messages can contain >1 roll. let's just read the first
@@ -150,7 +151,6 @@ export function dice_helper() {
                             "!</button>",
                     };
                     log(feature_name, "New message content: " + msg["content"]);
-                    log(feature_name, "[FFG Dice Helper] Sending helper button message via ChatMessage.create", { contentLength: msg.content?.length });
                     ChatMessage.create(msg);
                 }
             } else {
@@ -172,19 +172,9 @@ export function dice_helper() {
             
             // this would need to remain in renderchatmessage since we don't have easy access to the HTML later
             html.on("click", ".effg-die-result", async function (event) {
-                // v13: messageData may have id (not _id) or nested message._id
-                const resolvedId = messageData?.id ?? messageData?._id ?? messageData?.message?._id;
-                log(feature_name, "[FFG Dice Helper] renderChatMessage handler: click on .effg-die-result", { messageDataId: messageData?.id, messageData_id: messageData?._id, message_message_id: messageData?.message?._id, resolvedId });
                 event.preventDefault();
                 event.stopPropagation();
-                
-                // messageData is the ChatMessage document; wrap with normalized id for v13
-                let wrapper = {
-                    message: messageData,
-                    _id: resolvedId
-                };
-                log(feature_name, "[FFG Dice Helper] Calling dice_helper_clicked from renderChatMessage handler");
-                await dice_helper_clicked(wrapper);
+                await dice_helper_clicked(app);
             });
         }
     });
@@ -217,7 +207,6 @@ async function dice_helper_clicked(object) {
      *
      * @param {object} ChatMessage object passed in by the hook we're listened to
      */
-    log(feature_name, "[FFG Dice Helper] dice_helper_clicked called", { hasObject: !!object, objectKeys: object ? Object.keys(object) : [] });
     log(feature_name, "Detected button click; converting to results");
 
     if (!game.user.isGM) {
@@ -229,12 +218,10 @@ async function dice_helper_clicked(object) {
         return;
     }
     
-    // Try to determine the correct content path (v13: nested message.message.content)
+    // Try to determine the correct content path
     let content = null;
     
-    if (object?.message?.message?.content) {
-        content = object.message.message.content;
-    } else if (object?.message?.content) {
+    if (object?.message?.content) {
         content = object.message.content;
     } else if (object?.content) {
         content = object.content;
@@ -242,16 +229,14 @@ async function dice_helper_clicked(object) {
         content = object.data.content;
     } else if (object?.toObject) {
         let objData = object.toObject();
-        if (objData?.message?.content) {
-            content = objData.message.content;
-        } else if (objData?.content) {
+        if (objData?.content) {
             content = objData.content;
+        } else if (objData?.message?.content) {
+            content = objData.message.content;
         }
     }
-    log(feature_name, "[FFG Dice Helper] dice_helper_clicked content resolution", { hasContent: !!content, contentLength: content?.length });
     
     if (!content) {
-        console.warn("[FFG Dice Helper] dice_helper_clicked: no content found on object", object);
         return;
     }
     
@@ -259,30 +244,36 @@ async function dice_helper_clicked(object) {
     log(feature_name, JSON.stringify(data));
 
     let skill = data["skill"];
-    let suggestions = await fetch_suggestions(data);
+    let result = await fetch_suggestions(data);
 
     // Get the actual ChatMessage document from the collection
-    // v13: document id can be .id or ._id; wrapper may have message.message._id
+    // Handle both cases: wrapper object with message property, or direct ChatMessage document
     let msg = null;
     let messageId = null;
-    
-    messageId = object?.message?.id ?? object?.message?._id ?? object?.message?.message?._id ?? object?._id ?? object?.id;
-    if (messageId) {
+
+    if (object?.message?._id) {
+        // Wrapper object case (from socket or renderChatMessage wrapper)
+        messageId = object.message._id;
         msg = game.messages.get(messageId);
-    }
-    if (!messageId) {
-        console.warn("[FFG Dice Helper] dice_helper_clicked: could not get messageId from object", object);
+    } else if (object?._id && object.constructor?.name === "ChatMessage") {
+        // Direct ChatMessage document case
+        messageId = object._id;
+        msg = object; // Already have the document
+    } else if (object?._id) {
+        // Fallback: try to get by ID
+        messageId = object._id;
+        msg = game.messages.get(messageId);
+    } else {
         return;
     }
-    log(feature_name, "[FFG Dice Helper] dice_helper_clicked message lookup", { messageId, foundMsg: !!msg });
-    
+
     if (!msg) {
-        console.warn("[FFG Dice Helper] dice_helper_clicked: game.messages.get returned null for", messageId);
         return;
     }
-    
+
     let context = {
-        suggestions: suggestions,
+        suggestions: result.suggestions,
+        contextGroups: result.contextGroups,
         skill: skill,
     };
     let newContent = (await getTemplate("modules/ffg-star-wars-enhancements/templates/dice_helper.html"))(
@@ -327,8 +318,13 @@ async function fetch_suggestions(results) {
 
     // build out an array of the suggestions
     let suggestions = [];
+    let contextGroupMap = {};
+    let contextGroupOrder = [];
     for (var x = 0; x < suggestion_categories.length; x++) {
         let category = suggestion_categories[x];
+        if (!data[skill][category] || !Array.isArray(data[skill][category])) {
+            continue;
+        }
         // build an array of the suggestions for the specific category we're looking at now
         if ((category === "ad" && results["tr"] > 0) || (category === "th" && results["de"] > 0)) {
             var tmp_suggestions = data[skill][category];
@@ -337,15 +333,32 @@ async function fetch_suggestions(results) {
                 (suggestion) => suggestion.required <= results[category]
             );
         }
-        // only add the array if it's been populated
-        if (tmp_suggestions.length > 0) {
+
+        // separate context vs non-context entries
+        let nonContextSuggestions = tmp_suggestions.filter((s) => !s.context).sort((a, b) => a.required - b.required);
+        let contextSuggestions = tmp_suggestions.filter((s) => s.context);
+
+        // collect context entries across all categories, grouped by context name
+        for (let s of contextSuggestions) {
+            if (!contextGroupMap[s.context]) {
+                contextGroupMap[s.context] = [];
+                contextGroupOrder.push(s.context);
+            }
+            contextGroupMap[s.context].push({ text: s.text, required: s.required, category: category });
+        }
+
+        if (nonContextSuggestions.length > 0) {
             suggestions.push({
                 category: category,
-                suggestions: tmp_suggestions,
+                suggestions: nonContextSuggestions,
             });
         }
     }
-    return suggestions;
+
+    // build combined context groups
+    let contextGroups = contextGroupOrder.map((name) => ({ name: name, entries: contextGroupMap[name] }));
+
+    return { suggestions, contextGroups };
 }
 
 function is_supported_skill(skill, data) {
@@ -392,6 +405,13 @@ function load_data() {
      *  }
      */
     let journal_name = game.settings.get("ffg-star-wars-enhancements", "dice-helper-data");
+
+    // return cached data if available
+    if (_cachedData && _cacheJournalName === journal_name) {
+        log(feature_name, "Returning cached data for " + journal_name);
+        return _cachedData;
+    }
+
     let journal = game.journal.filter((journal) => journal.name === journal_name);
 
     if (journal.length <= 0) {
@@ -401,30 +421,65 @@ function load_data() {
     }
     log(feature_name, "Found journal " + journal_name);
 
-    let journal_pages = journal[0].pages.filter((i) => i.name === "dice_helper");
-    if (journal_pages.length <= 0) {
+    let journal_pages = journal[0].pages.contents;
+    if (!journal_pages || journal_pages.length <= 0) {
         ui.notifications.warn("Failed to find journal with correct pages - make sure it's created or something");
         log(feature_name, "Unable to find journal with correct pages");
         return {};
     }
 
-    try {
-        let data = journal_pages[0].text.content.replace("<p>", "").replace("</p>", "");
-        let jsondata = JSON.parse(data.replace('"', '"'));
-        // Let translate the skill names if possible
-        Object.keys(jsondata).forEach((skillname) => {
-            if (skillname.includes("SWFFG.")) {
-                let localized = game.i18n.localize(skillname);
-                let localizedskill = localized.toLowerCase().replace(/\s+/g, " ").trim();
-                Object.defineProperty(jsondata, localizedskill, Object.getOwnPropertyDescriptor(jsondata, skillname));
-                delete jsondata[skillname];
-            }
-        });
-        return jsondata;
-    } catch (err) {
-        ui.notifications.warn("Dice helper: invalid data detected in journal");
+    let jsondata = {};
+    for (let page of journal_pages) {
+        if (!page.text || !page.text.content) {
+            continue;
+        }
+        try {
+            let data = page.text.content.replace(/<\/?p>/g, "");
+            let pageData = JSON.parse(data.replace(/\u201c|\u201d/g, '"'));
+            // merge page data into combined result, expanding comma-separated keys
+            Object.keys(pageData).forEach((key) => {
+                let keys = key.split(",").map((k) => k.trim());
+                for (let k of keys) {
+                    if (jsondata[k]) {
+                        // merge arrays for each category
+                        for (let cat of ["su", "ad", "tr", "fa", "th", "de"]) {
+                            if (pageData[key][cat]) {
+                                if (!jsondata[k][cat]) {
+                                    jsondata[k][cat] = [];
+                                }
+                                jsondata[k][cat] = jsondata[k][cat].concat(pageData[key][cat]);
+                            }
+                        }
+                    } else {
+                        jsondata[k] = JSON.parse(JSON.stringify(pageData[key]));
+                    }
+                }
+            });
+            log(feature_name, "Loaded data from page: " + page.name);
+        } catch (err) {
+            log(feature_name, "Skipping page '" + page.name + "': not valid dice helper JSON");
+        }
+    }
+
+    if (Object.keys(jsondata).length === 0) {
+        ui.notifications.warn("Dice helper: no valid data found in any journal page");
         return {};
     }
+
+    // Translate skill names if possible
+    Object.keys(jsondata).forEach((skillname) => {
+        if (skillname.includes("SWFFG.")) {
+            let localized = game.i18n.localize(skillname);
+            let localizedskill = localized.toLowerCase().replace(/\s+/g, " ").trim();
+            Object.defineProperty(jsondata, localizedskill, Object.getOwnPropertyDescriptor(jsondata, skillname));
+            delete jsondata[skillname];
+        }
+    });
+
+    _cachedData = jsondata;
+    _cacheJournalName = journal_name;
+    log(feature_name, "Cached data for " + journal_name);
+    return jsondata;
 }
 
 export async function create_and_populate_journal() {
