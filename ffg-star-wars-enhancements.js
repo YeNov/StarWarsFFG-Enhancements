@@ -17,12 +17,7 @@ import {
     init as talent_skill_association_init,
     talent_skill_association_hooks,
 } from "./scripts/talentsAutomation/talent_skill_association.js";
-import { init as talent_bulk_update_init } from "./scripts/talentsAutomation/talent_bulk_update.js";
 import { init as special_ammo_init, hooks as special_ammo_hooks } from "./scripts/specialAmmo/special_ammo.js";
-import {
-    init as talent_skill_association_init,
-    talent_skill_association_hooks,
-} from "./scripts/talentsAutomation/talent_skill_association.js";
 import { init as talent_bulk_update_init } from "./scripts/talentsAutomation/talent_bulk_update.js";
 import { stim_sync } from "./scripts/stim_sync.js";
 import { minionsize_sync } from "./scripts/minionsize_sync.js";
