@@ -4,7 +4,7 @@ export function log_msg(feature, message) {
     }
 }
 
-export class FfgEnhancementsLayer extends InteractionLayer {
+export class FfgEnhancementsLayer extends foundry.canvas.layers.InteractionLayer {
     constructor() {
         super();
     }
