@@ -184,18 +184,24 @@ export async function update_status(token, ranks, icon_path) {
     if (!window.EffectCounter) {
         // the user doesn't have status icon counters installed; they don't get a count
         log(module_name, "Adding status to token");
-        token.toggleEffect(icon_path, { active: active });
-    } else {
-        log(module_name, "Adding status rank " + ranks + " to token");
-        // no need to search for the effect ourselves, as this is done in the underlying libraries
-        let new_counter = new ActiveEffectCounter(ranks, icon_path, token.document);
-        // render it
-        if (active) {
-            await new_counter.update();
-        } else {
-            // setValue() with a value of 0 clears the effect while update() does not
-            await new_counter.setValue(0);
+        await token.toggleEffect(icon_path, { active: active });
+        return;
+    }
+
+    log(module_name, "Adding status rank " + ranks + " to token");
+    let effect = token.actor?.effects.find((e) => e.img === icon_path);
+
+    if (active) {
+        if (!effect) {
+            // the status icon counter module's modern API requires the effect to
+            // already exist on the actor before its counter can be addressed
+            await token.toggleEffect(icon_path, { active: true });
+            effect = token.actor?.effects.find((e) => e.img === icon_path);
         }
+        await effect?.statusCounter?.setValue(ranks);
+    } else if (effect?.statusCounter) {
+        // setValue(0) clears the effect via the counter's type
+        await effect.statusCounter.setValue(0);
     }
 }
 
