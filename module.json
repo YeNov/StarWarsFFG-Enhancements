@@ -99,7 +99,7 @@
     "license": "LICENSE",
     "readme": "README.md",
     "esmodules": ["ffg-star-wars-enhancements.js"],
-    "styles": ["styles/opening_crawl.css", "styles/datapads.css", "styles/dice_helper.css", "styles/settings.css", "styles/special_ammo.css"],
+    "styles": ["styles/opening_crawl.css", "styles/datapads.css", "styles/dice_helper.css", "styles/settings.css"],
     "packs": [
         {
             "name": "ffg-sw-enhanced-scene-ideas",

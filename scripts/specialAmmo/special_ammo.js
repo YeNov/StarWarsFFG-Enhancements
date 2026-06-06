@@ -368,23 +368,65 @@ async function _injectCodexSpecialAmmo(actor, root) {
             card.appendChild(chip);
         }
 
-        // Selector (dropdown of valid ammo names + a "none" option).
-        const select = document.createElement("select");
-        select.className = "cdx-ammo-select cdx-ammo-special";
-        const noneOpt = document.createElement("option");
-        noneOpt.value = "";
-        noneOpt.textContent = game.i18n.localize("ffg-star-wars-enhancements.special-ammo.none");
-        select.appendChild(noneOpt);
-        for (const it of validItems) {
-            const opt = document.createElement("option");
-            opt.value = it.id;
-            opt.textContent = it.name;
-            if (it.id === selectedAmmo) opt.selected = true;
-            select.appendChild(opt);
-        }
+        // Selector — a custom dropdown of regular elements (a native <select>
+        // popup ignores CSS in Foundry's Chromium build and renders unreadable on
+        // the dark scheme). All styling is set INLINE and visibility is toggled in
+        // JS, so it works regardless of whether any module stylesheet is loaded;
+        // colours resolve the active scheme via the inherited --cdx-* variables.
+        const noneLabel = game.i18n.localize("ffg-star-wars-enhancements.special-ammo.none");
+        const labelFor = (id) => (id ? (validItems.find((i) => i.id === id)?.name ?? noneLabel) : noneLabel);
+
+        const dropdown = document.createElement("div");
+        dropdown.className = "cdx-ammo-select cdx-ammo-special";
+        Object.assign(dropdown.style, {
+            position: "relative", minWidth: "300px", width: "fit-content", fontFamily: "Orbitron",
+            fontSize: "10px", color: "var(--cdx-ink)", cursor: "pointer", userSelect: "none",
+        });
+
+        const trigger = document.createElement("div");
+        trigger.className = "cdx-ammo-trigger";
+        Object.assign(trigger.style, {
+            display: "flex", alignItems: "center", justifyContent: "space-between",
+            gap: "6px", background: "var(--cdx-paper)", border: "1px solid var(--cdx-line)",
+            borderRadius: "3px", padding: "2px 6px",
+        });
+        const triggerLabel = document.createElement("span");
+        Object.assign(triggerLabel.style, { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" });
+        triggerLabel.textContent = labelFor(selectedAmmo);
+        const caret = document.createElement("i");
+        caret.className = "fas fa-caret-down";
+        trigger.append(triggerLabel, caret);
+
+        const optionsBox = document.createElement("div");
+        optionsBox.className = "cdx-ammo-options";
+        Object.assign(optionsBox.style, {
+            display: "none", width: "100%", marginTop: "2px", background: "var(--cdx-paper)",
+            border: "1px solid var(--cdx-line)", borderRadius: "3px", maxHeight: "160px", overflowY: "auto",
+        });
+
+        const paintOption = (opt) => {
+            const sel = opt.dataset.value === selectedAmmo;
+            opt.style.background = sel ? "var(--cdx-accent)" : "transparent";
+            opt.style.color = sel ? "var(--cdx-chip-ink)" : "var(--cdx-ink)";
+        };
+        const addOption = (value, text) => {
+            const opt = document.createElement("div");
+            opt.className = "cdx-ammo-option";
+            opt.dataset.value = value;
+            opt.textContent = text;
+            Object.assign(opt.style, { padding: "3px 6px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" });
+            paintOption(opt);
+            opt.addEventListener("mouseenter", () => { opt.style.background = "var(--cdx-accent)"; opt.style.color = "var(--cdx-chip-ink)"; });
+            opt.addEventListener("mouseleave", () => paintOption(opt));
+            optionsBox.appendChild(opt);
+        };
+        addOption("", noneLabel);
+        for (const it of validItems) addOption(it.id, it.name);
+
+        dropdown.append(trigger, optionsBox);
         // Insert the selector just under the chip's "Ammo" label.
         const label = chip.querySelector(".cdx-ammo-k");
-        if (label) label.after(select); else chip.appendChild(select);
+        if (label) label.after(dropdown); else chip.appendChild(dropdown);
 
         // Show the special magazine for the loaded ammo, or the core stepper when
         // nothing is loaded. "Special if loaded, else core."
@@ -401,10 +443,15 @@ async function _injectCodexSpecialAmmo(actor, root) {
             }
         };
 
-        select.addEventListener("click", (ev) => ev.stopPropagation());
-        select.addEventListener("change", async (ev) => {
+        // Swallow clicks inside the dropdown so they don't toggle the card's expand.
+        dropdown.addEventListener("click", (ev) => ev.stopPropagation());
+        const setOpen = (v) => { optionsBox.style.display = v ? "block" : "none"; };
+        trigger.addEventListener("click", (ev) => {
             ev.stopPropagation();
-            const value = ev.currentTarget.value;
+            setOpen(optionsBox.style.display === "none");
+        });
+
+        const selectAmmo = async (value) => {
             try {
                 const cur = weapon.getFlag(MODULE_ID, FLAG_SPECIAL_AMMO) || {};
                 // Nested-object form (what setFlag uses) — the dotted-string key
@@ -435,7 +482,23 @@ async function _injectCodexSpecialAmmo(actor, root) {
             } catch (e) {
                 return;
             }
+            selectedAmmo = value;
+            triggerLabel.textContent = labelFor(value);
+            optionsBox.querySelectorAll(".cdx-ammo-option").forEach(paintOption);
             applySelection(value);
+        };
+
+        optionsBox.addEventListener("click", (ev) => {
+            const opt = ev.target.closest(".cdx-ammo-option");
+            if (!opt) return;
+            ev.stopPropagation();
+            setOpen(false);
+            selectAmmo(opt.dataset.value);
+        });
+
+        // Close the open list when clicking elsewhere in the sheet.
+        root.addEventListener("click", (ev) => {
+            if (!dropdown.contains(ev.target)) setOpen(false);
         });
 
         applySelection(selectedAmmo);
