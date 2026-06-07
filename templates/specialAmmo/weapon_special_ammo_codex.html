@@ -1,0 +1,21 @@
+{{!-- Codex II variant of weapon_special_ammo.html: a codex block (cdx-idesc with
+      the blue header bar) so it matches the other Codex item-sheet blocks. Keeps
+      the functional input names/classes the listeners bind to. --}}
+<div class="special-ammo-settings cdx-idesc" style="min-height: 0; margin: 8px 0;">
+    <div class="cdx-idesc-head">{{localize "ffg-star-wars-enhancements.special-ammo.section-title"}}</div>
+    <div style="padding: 8px 10px; display: flex; flex-direction: column; gap: 8px;">
+        <label class="cdx-icheck">
+            <input type="checkbox" name="flags.special-ammo.hasSpecialAmmo" data-dtype="Boolean" {{#if hasSpecialAmmo}}checked{{/if}} />
+            <span>{{localize "ffg-star-wars-enhancements.special-ammo.has-special-ammo"}}</span>
+        </label>
+        {{#if hasSpecialAmmo}}
+        <input type="text" name="flags.special-ammo.ammoFilter" value="{{ammoFilter}}" placeholder="{{localize 'ffg-star-wars-enhancements.special-ammo.ammo-filter-placeholder'}}" style="width: 100%; box-sizing: border-box;" />
+        <select name="flags.special-ammo.selectedAmmo" style="width: 100%; box-sizing: border-box;">
+            <option value="">{{localize "ffg-star-wars-enhancements.special-ammo.none"}}</option>
+            {{#each ammoItems}}
+            <option value="{{this.id}}" {{#if (eq this.id ../selectedAmmo)}}selected{{/if}}>{{this.name}}</option>
+            {{/each}}
+        </select>
+        {{/if}}
+    </div>
+</div>

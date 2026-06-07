@@ -538,13 +538,18 @@ async function _injectWeaponAmmoUI(weapon, html) {
         ammoItems,
     };
 
+    // The Codex II weapon sheet (ApplicationV2) uses codex markup + .cdx-pane
+    // tabs; use a codex-styled template and inject into the configuration pane.
+    const isCodex = html.hasClass("cdx-item") || html.find(".cdx-item-body").length > 0 || html.closest(".cdx").length > 0;
+
     const rendered = await renderTemplate(
-        `modules/${MODULE_ID}/templates/specialAmmo/weapon_special_ammo.html`,
+        `modules/${MODULE_ID}/templates/specialAmmo/${isCodex ? "weapon_special_ammo_codex.html" : "weapon_special_ammo.html"}`,
         templateData
     );
 
-    // Inject into configuration tab
-    const configTab = html.find('.tab[data-tab="configuration"]');
+    const configTab = isCodex
+        ? html.find('.cdx-pane[data-tab="configuration"]')
+        : html.find('.tab[data-tab="configuration"]');
     if (configTab.length) {
         configTab.append(rendered);
     }
@@ -619,15 +624,24 @@ async function _injectGearAmmoUI(gear, html) {
         templateData
     );
 
-    // Inject after the weapon-values container in gear sheet
-    const weaponValues = html.find(".weapon-values").last();
-    if (weaponValues.length) {
-        weaponValues.after(rendered);
+    // Inject the block. The Codex II gear sheet (ApplicationV2) has a
+    // .cdx-item-body (no .sheet-body); the stock sheet uses .weapon-values /
+    // .sheet-body.
+    if (isCodex) {
+        const codexBody = html.find(".cdx-item-body").first();
+        if (codexBody.length) {
+            codexBody.prepend(rendered);
+        }
     } else {
-        // Fallback: inject before sheet-body tabs
-        const sheetBody = html.find(".sheet-body");
-        if (sheetBody.length) {
-            sheetBody.prepend(rendered);
+        const weaponValues = html.find(".weapon-values").last();
+        if (weaponValues.length) {
+            weaponValues.after(rendered);
+        } else {
+            // Fallback: inject before sheet-body tabs
+            const sheetBody = html.find(".sheet-body");
+            if (sheetBody.length) {
+                sheetBody.prepend(rendered);
+            }
         }
     }
 
@@ -721,8 +735,11 @@ async function _injectGearQualities(gear, html, isCodex = false) {
         { qualities }
     );
 
-    // Inject into the attributes tab
-    const attributesTab = html.find('.tab[data-tab="attributes"]');
+    // Inject into the attributes tab. The Codex II gear sheet uses
+    // .cdx-pane[data-tab="attributes"] instead of .tab[data-tab="..."].
+    const attributesTab = isCodex
+        ? html.find('.cdx-pane[data-tab="attributes"]')
+        : html.find('.tab[data-tab="attributes"]');
     if (attributesTab.length) {
         attributesTab.prepend(rendered);
     }
