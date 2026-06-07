@@ -1,0 +1,37 @@
+{{!-- Codex II variant of gear_ammo.html. "Can be used as ammo" is a cdx-icheck
+      toggle; the ammo magazine reuses the actor sheet's wound/strain stat block
+      (cdx-stat / cdx-stepline / cdx-thresh / cdx-track) — CURRENT first, THRESHOLD
+      second, with -/+ steppers and a progress track shown only when threshold>1.
+      Styled by the system's cdx.css, so it matches the active scheme. --}}
+<div class="gear-ammo-settings" style="margin: 8px 0;">
+    <label class="cdx-icheck">
+        <input type="checkbox" name="flags.ammo-data.canBeUsedAsAmmo" data-dtype="Boolean" {{#if canBeUsedAsAmmo}}checked{{/if}} />
+        <span>{{localize "ffg-star-wars-enhancements.special-ammo.can-be-ammo"}}</span>
+    </label>
+    {{#if canBeUsedAsAmmo}}
+    <div class="cdx-stat" style="margin-top: 6px;">
+        <div class="cdx-stat-head" style="background: var(--cdx-brown);"><span>{{localize "ffg-star-wars-enhancements.special-ammo.ammo"}}</span></div>
+        <div class="cdx-stat-body">
+            <div class="cdx-stepline">
+                <button type="button" class="cdx-step gear-ammo-step" data-dir="-1"><i class="fas fa-minus"></i></button>
+                <div class="cdx-stepline-mid">
+                    <div class="cdx-thresh">
+                        <input type="text" name="flags.ammo-data.ammoCurrent" value="{{ammoCurrent}}" data-dtype="Number" style="background: transparent; border: none; padding: 0;" />
+                        <span class="cdx-slash">/</span>
+                        <input type="text" name="flags.ammo-data.ammoMax" value="{{ammoMax}}" data-dtype="Number" style="background: transparent; border: none; padding: 0;" />
+                    </div>
+                    {{#with track}}
+                    {{#if useBar}}
+                    <div class="cdx-track bar"><div class="cdx-track-fill" style="width:{{pct}}%;background:{{color}}"></div></div>
+                    {{else}}
+                    <div class="cdx-track pips">{{#each pips}}<span class="cdx-pip{{#if this}} on{{/if}}"{{#if this}} style="background:{{../color}}"{{/if}}></span>{{/each}}</div>
+                    {{/if}}
+                    {{/with}}
+                </div>
+                <button type="button" class="cdx-step gear-ammo-step" data-dir="1"><i class="fas fa-plus"></i></button>
+            </div>
+            <div class="cdx-stat-sub"><span>{{localize "ffg-star-wars-enhancements.special-ammo.current"}}</span><span>{{localize "ffg-star-wars-enhancements.special-ammo.threshold"}}</span></div>
+        </div>
+    </div>
+    {{/if}}
+</div>

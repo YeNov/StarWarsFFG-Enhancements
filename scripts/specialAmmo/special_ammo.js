@@ -586,14 +586,36 @@ async function _injectGearAmmoUI(gear, html) {
     const ammoMax = flagData.ammoMax ?? 0;
     const ammoCurrent = flagData.ammoCurrent ?? 0;
 
+    // Progress track for the codex ammo block — only when threshold > 1. Mirrors
+    // the system's _cdxTrack (green → amber → red; pips for small, bar for large).
+    let track = null;
+    if (canBeUsedAsAmmo && ammoMax > 1) {
+        const ratio = ammoMax > 0 ? ammoCurrent / ammoMax : 0;
+        // Inverted vs wound/strain: a FULL magazine is "good" (green), an empty
+        // one is "bad" (red).
+        const color = ratio <= 0.2 ? "#a51f17" : ratio < 0.5 ? "#c8902e" : "#3f7d3a";
+        if (ammoMax >= 20) {
+            track = { useBar: true, color, pct: Math.max(0, Math.min(100, Math.round(ratio * 100))) };
+        } else {
+            const pips = [];
+            for (let i = 0; i < ammoMax; i++) pips.push(i < ammoCurrent);
+            track = { useBar: false, color, pips };
+        }
+    }
+
     const templateData = {
         canBeUsedAsAmmo,
         ammoMax,
         ammoCurrent,
+        track,
     };
 
+    // On the Codex II item sheet, use the codex-class variant so the injected UI
+    // matches the active scheme (styled by the system's cdx.css).
+    const isCodex = html.hasClass("cdx-item") || html.find(".cdx-item-body").length > 0 || html.closest(".cdx").length > 0;
+
     const rendered = await renderTemplate(
-        `modules/${MODULE_ID}/templates/specialAmmo/gear_ammo.html`,
+        `modules/${MODULE_ID}/templates/specialAmmo/${isCodex ? "gear_ammo_codex.html" : "gear_ammo.html"}`,
         templateData
     );
 
@@ -636,9 +658,22 @@ async function _injectGearAmmoUI(gear, html) {
         });
     });
 
+    // Codex magazine steppers (−/+): adjust ammoCurrent, clamped to [0, threshold].
+    // The setFlag re-renders the sheet, which re-injects the block with the new
+    // value and refreshed track.
+    container.find(".gear-ammo-step").on("click", async (ev) => {
+        ev.preventDefault();
+        const dir = Number(ev.currentTarget.dataset.dir) || 0;
+        const data = gear.getFlag(MODULE_ID, FLAG_AMMO_DATA) || {};
+        const mx = Number(data.ammoMax) || 0;
+        let cur = (Number(data.ammoCurrent) || 0) + dir;
+        cur = Math.max(0, mx ? Math.min(mx, cur) : cur);
+        await gear.setFlag(MODULE_ID, FLAG_AMMO_DATA, { ...data, ammoCurrent: cur });
+    });
+
     // Inject qualities list when "can be used as ammo" is enabled
     if (canBeUsedAsAmmo) {
-        await _injectGearQualities(gear, html);
+        await _injectGearQualities(gear, html, isCodex);
     }
 }
 
@@ -678,11 +713,11 @@ function _summarizeQualities(gear) {
 /**
  * Inject qualities list into gear item sheet and handle drag-drop + delete.
  */
-async function _injectGearQualities(gear, html) {
+async function _injectGearQualities(gear, html, isCodex = false) {
     const qualities = _summarizeQualities(gear);
 
     const rendered = await renderTemplate(
-        `modules/${MODULE_ID}/templates/specialAmmo/gear_qualities.html`,
+        `modules/${MODULE_ID}/templates/specialAmmo/${isCodex ? "gear_qualities_codex.html" : "gear_qualities.html"}`,
         { qualities }
     );
 

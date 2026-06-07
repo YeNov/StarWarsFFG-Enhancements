@@ -1,0 +1,29 @@
+{{!-- Codex II variant of gear_qualities.html: a codex-styled qualities box that
+      matches the .cdx scheme palette (brown header bar like the cdx-istat boxes,
+      scheme-aware rows). Keeps the functional hooks (.gear-ammo-qualities drop
+      target, li[data-*], .gear-ammo-quality-edit/-delete). --}}
+<div class="gear-ammo-qualities" style="margin: 8px 0; background: var(--cdx-paper2); border: 1px solid var(--cdx-line); border-radius: 3px; overflow: hidden;">
+    <div style="background: var(--cdx-brown); color: #fff; font-family: 'Orbitron'; font-weight: 700; font-size: 8.5px; letter-spacing: 1px; text-transform: uppercase; padding: 3px 8px;">{{localize "SWFFG.ItemQualities"}}</div>
+    <ul style="list-style: none; margin: 0; padding: 4px 6px;">
+        {{#each qualities as |item id|}}
+        <li class="item" data-item-id="{{item.modId}}" data-desc="{{item.description}}" data-upgrade-name="{{item.name}}" data-item-type="itemmodifier" data-item-index="{{item.itemIndex}}"
+            style="display: flex; align-items: center; gap: 8px; padding: 3px 2px; border-bottom: 1px solid var(--cdx-line); color: var(--cdx-ink);">
+            <div class="item-name" style="flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{item.name}}</div>
+            {{#if (ne item.totalRanks 0)}}
+            <div data-tooltip="{{#each item.summarizedRanks as |rankIndex rankSource|}}{{ rankIndex }} {{localize 'SWFFG.Items.Sheets.Qualities.Ranks'}} {{ rankSource }}<br>{{/each}}" data-tooltip-direction="UP" style="white-space: nowrap;">
+                {{item.totalRanks}} <i class="fa-regular fa-circle-question"></i>
+            </div>
+            {{else}}
+            <div data-tooltip="{{localize 'SWFFG.Items.Popout.Label.NotRanked'}}" data-tooltip-direction="UP"><i class="fa-regular fa-circle-question"></i></div>
+            {{/if}}
+            <div class="item-controls" style="display: flex; gap: 8px;">
+                <a class="item-control gear-ammo-quality-edit" title="Edit Item"><i class="fas fa-edit"></i></a>
+                <a class="item-control gear-ammo-quality-delete" title="Delete Item"><i class="fas fa-trash"></i></a>
+            </div>
+        </li>
+        {{/each}}
+        {{#if (eq qualities.length 0)}}
+        <li style="padding: 4px 2px; color: var(--cdx-dim);">{{localize "SWFFG.Items.Popout.Info.DragDrop"}}</li>
+        {{/if}}
+    </ul>
+</div>
