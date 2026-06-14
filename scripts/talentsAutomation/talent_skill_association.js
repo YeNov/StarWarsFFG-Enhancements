@@ -110,7 +110,14 @@ export function talent_skill_association_hooks() {
             return;
         }
 
-        inject_skill_dropdown(item, html);
+        // The Codex II talent sheet has no standard .header-fields to inject into;
+        // add an "Associated Skills" tab to its .cdx-tabstrip instead.
+        const isCodex = html.find(".cdx-item-talent").length > 0 || html.find(".cdx-tabstrip").length > 0 || html.closest(".cdx").length > 0;
+        if (isCodex) {
+            inject_skill_tab_codex(item, html, app);
+        } else {
+            inject_skill_dropdown(item, html);
+        }
     });
 
     Hooks.on("renderChatMessage", async (message, html, messageData) => {
@@ -289,6 +296,87 @@ function inject_skill_dropdown(item, html) {
     } else {
         log(feature_name, "Could not find containers in talent sheet header");
     }
+}
+
+/**
+ * Codex II talent sheet variant of inject_skill_dropdown: the codex template has
+ * no standard `.header-fields`, so add an "Associated Skills" tab to the codex
+ * tab strip (.cdx-tabstrip buttons / .cdx-pane sections in .cdx-item-body) and
+ * render the same skill-dropdown rows inside it.
+ */
+function inject_skill_tab_codex(item, html, app) {
+    const tabstrip = html.find(".cdx-tabstrip").first();
+    const body = html.find(".cdx-item-body").first();
+    if (!tabstrip.length || !body.length) {
+        log(feature_name, "Codex talent sheet: no .cdx-tabstrip/.cdx-item-body to add the Associated Skills tab");
+        return;
+    }
+    // Idempotency — the render hook fires on every render.
+    if (html.find('.cdx-tab[data-tab="assocskills"]').length) {
+        return;
+    }
+
+    const currentValues = get_associated_skills(item);
+    const skillOptions = get_skill_options();
+    let rowsHtml = "";
+    for (let i = 0; i < currentValues.length; i++) {
+        rowsHtml += build_skill_row(skillOptions, currentValues[i], i, currentValues.length);
+    }
+
+    const tabLabel = game.i18n.localize("ffg-star-wars-enhancements.talent-skill-association-label");
+    tabstrip.append(`<button type="button" class="cdx-tab" data-tab="assocskills">${tabLabel}</button>`);
+    const pane = $(`<section class="cdx-pane" data-tab="assocskills"><div class="effg-skill-rows" style="padding: 6px 2px;">${rowsHtml}</div></section>`);
+    body.append(pane);
+
+    // Switch to a tab by toggling .active on every .cdx-tab/.cdx-pane within the
+    // live sheet form (resolved from the clicked node, so it never depends on a
+    // possibly-stale jQuery reference). Mirrors the sheet's own handler.
+    const activate = (fromNode, tab) => {
+        const rootEl = (fromNode && fromNode.closest && fromNode.closest("form.cdx-sheet"))
+            || tabstrip.closest("form.cdx-sheet")[0]
+            || tabstrip[0]?.parentElement;
+        if (!rootEl) return;
+        rootEl.querySelectorAll(".cdx-tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === tab));
+        rootEl.querySelectorAll(".cdx-pane").forEach((p) => p.classList.toggle("active", p.dataset.tab === tab));
+        if (app) app._cdxTab = tab;
+    };
+    // The sheet wires its native .cdx-tab clicks in activateListeners (which runs
+    // BEFORE this render hook), so our injected button needs its own handler. Use
+    // a delegated handler on the tab strip so it's robust to the button being
+    // (re)created, and stop propagation so it doesn't double-fire.
+    tabstrip.on("click", '.cdx-tab[data-tab="assocskills"]', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        activate(ev.currentTarget, "assocskills");
+    });
+    // Restore the active state if a re-render left our tab selected.
+    if (app && app._cdxTab === "assocskills") {
+        activate(tabstrip[0], "assocskills");
+    }
+
+    // Dropdown handlers (same behaviour as the standard injection).
+    pane.on("change", ".effg-skill-select", async (event) => {
+        const index = parseInt($(event.target).data("index"));
+        const skills = get_associated_skills(item);
+        skills[index] = event.target.value;
+        await item.setFlag("ffg-star-wars-enhancements", "associatedSkill", skills);
+    });
+    pane.on("click", ".effg-skill-add", async (event) => {
+        event.preventDefault();
+        const skills = get_associated_skills(item);
+        skills.push("");
+        await item.setFlag("ffg-star-wars-enhancements", "associatedSkill", skills);
+    });
+    pane.on("click", ".effg-skill-remove", async (event) => {
+        event.preventDefault();
+        const index = parseInt($(event.currentTarget).data("index"));
+        const skills = get_associated_skills(item);
+        skills.splice(index, 1);
+        if (skills.length === 0) {
+            skills.push("");
+        }
+        await item.setFlag("ffg-star-wars-enhancements", "associatedSkill", skills);
+    });
 }
 
 /**
