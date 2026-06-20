@@ -90,6 +90,7 @@ export function hooks() {
             if (!root) return;
             try {
                 await _injectCodexSpecialAmmo(app.document ?? app.actor, root);
+                await _injectCodexAmmoGear(app.document ?? app.actor, root);
             } catch (e) {
                 log("special_ammo", `Codex special-ammo injection failed: ${e}`);
             }
@@ -234,14 +235,18 @@ async function _computeAmmoResult(message) {
     }
 
     const magazinesLeft = ammoItem.system?.quantity?.value ?? ammoItem.system?.quantity ?? 0;
-    const qualities = (ammoItem.system?.itemmodifier || []).map((mod) => {
+    // Enrich each quality's description up front so the chat pill can carry it in a
+    // data-tooltip set at render time. Setting the tooltip lazily on mouseenter is
+    // too late — Foundry's tooltip manager already handled the hover.
+    const qualities = await Promise.all((ammoItem.system?.itemmodifier || []).map(async (mod) => {
         const name = mod.name || "";
         const rank = parseInt(mod.system?.rank) || 0;
+        const rawDesc = mod.system?.description || "";
         return {
             label: rank ? `${name} ${rank}` : name,
-            qualityId: mod._id || "",
+            description: rawDesc ? await TextEditor.enrichHTML(rawDesc) : "",
         };
-    });
+    }));
 
     return {
         ammoName: ammoItem.name,
@@ -252,14 +257,13 @@ async function _computeAmmoResult(message) {
         weaponName: weapon.name,
         magazinesLeft: magazinesLeft,
         qualities: qualities,
-        ammoItemId: ammoItem.id,
-        actorId: actor.id,
     };
 }
 
 /**
- * Render the special-ammo chat block from a (snapshotted) template-data object
- * and wire the lazy quality-description tooltips.
+ * Render the special-ammo chat block from a (snapshotted) template-data object.
+ * Quality pills carry their (enriched) description in a data-tooltip baked into the
+ * template, so the tooltip shows on hover with no extra wiring.
  */
 async function _renderSpecialAmmoBlock(html, templateData) {
     const ammoHtml = await renderTemplate(
@@ -267,28 +271,6 @@ async function _renderSpecialAmmoBlock(html, templateData) {
         templateData
     );
     html.append(ammoHtml);
-
-    // Lazy-load quality descriptions on hover
-    html.find(".special-ammo-quality-pill").on("mouseenter", async function () {
-        const pill = $(this);
-        if (pill.data("tooltip-loaded")) return;
-        const qualityId = pill.data("quality-id");
-        const ammoId = pill.data("ammo-id");
-        const actId = pill.data("actor-id");
-        const act = game.actors.get(actId);
-        if (!act) return;
-        const ammo = act.items.get(ammoId);
-        if (!ammo) return;
-        const mod = (ammo.system?.itemmodifier || []).find((m) => m._id === qualityId);
-        if (!mod) return;
-        const desc = mod.system?.description || "";
-        if (desc) {
-            const enriched = await TextEditor.enrichHTML(desc);
-            pill.attr("data-tooltip", enriched);
-            pill.attr("data-tooltip-direction", "UP");
-        }
-        pill.data("tooltip-loaded", true);
-    });
 }
 
 /**
@@ -395,6 +377,42 @@ function _buildCodexMagazine(ammoItem) {
 
     wrap.append(minus, count, plus);
     return wrap;
+}
+
+/**
+ * Show a magazine +/- stepper on the Codex GEAR card (for items flagged as ammo),
+ * mirroring the weapon card: a .cdx-ammo block the system CSS reveals (centered)
+ * when the card is expanded. The stepper adjusts THIS gear item's ammo-data — it
+ * IS the ammo — reusing _buildCodexMagazine. Idempotent: the hook fires on every
+ * render, so we never double-inject.
+ */
+async function _injectCodexAmmoGear(actor, root) {
+    if (!actor) return;
+
+    for (const card of root.querySelectorAll(".cdx-card.gear[data-item-id]")) {
+        const gear = actor.items.get(card.dataset.itemId);
+        if (!gear) continue;
+
+        const ammoData = gear.getFlag(MODULE_ID, FLAG_AMMO_DATA);
+        if (!ammoData?.canBeUsedAsAmmo) continue;
+
+        // Idempotency — the sheet re-renders often; never double-inject.
+        if (card.querySelector(".cdx-ammo-gear")) continue;
+
+        // A .cdx-ammo block so the system CSS centers + reveals it on expand; the
+        // .cdx-ammo-gear marker is for idempotency and to distinguish it from the
+        // weapon chips. Clicks are swallowed so adjusting ammo doesn't collapse it.
+        const chip = document.createElement("div");
+        chip.className = "cdx-ammo cdx-ammo-gear";
+        chip.addEventListener("click", (ev) => ev.stopPropagation());
+
+        const label = document.createElement("span");
+        label.className = "cdx-ammo-k";
+        label.textContent = game.i18n.localize("ffg-star-wars-enhancements.special-ammo.ammo");
+        chip.append(label, _buildCodexMagazine(gear));
+
+        card.appendChild(chip);
+    }
 }
 
 /**

@@ -14,7 +14,7 @@
         {{#if qualities.length}}
         <div style="display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 5px;">
             {{#each qualities}}
-            <span class="special-ammo-quality-pill" data-quality-id="{{this.qualityId}}" data-ammo-id="{{../ammoItemId}}" data-actor-id="{{../actorId}}" style="display: inline-block; padding: 2px 8px; font-size: 11px; background: rgba(0,0,0,0.12); border-radius: 12px; cursor: default;">{{this.label}}</span>
+            <span class="special-ammo-quality-pill"{{#if this.description}} data-tooltip="{{this.description}}" data-tooltip-direction="UP"{{/if}} style="display: inline-block; padding: 2px 8px; font-size: 11px; background: rgba(0,0,0,0.12); border-radius: 12px; cursor: help;">{{this.label}}</span>
             {{/each}}
         </div>
         {{/if}}
