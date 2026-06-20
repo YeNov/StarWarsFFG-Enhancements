@@ -354,19 +354,58 @@ async function _injectCodexSpecialAmmo(actor, root) {
         }
 
         // Reuse the system's core-ammo chip if present (weapon has config.enableAmmo);
-        // otherwise create one — the system CSS then places + shows it on expand.
+        // otherwise create one — the system CSS then places + shows it (centered,
+        // full-width under the card) on expand. The chip is just our host container;
+        // the visible UI is the self-contained panel built below.
         let chip = card.querySelector(".cdx-ammo");
         if (!chip) {
             chip = document.createElement("div");
             chip.className = "cdx-ammo";
             chip.dataset.weaponId = weapon.id;
-            const k = document.createElement("span");
-            k.className = "cdx-ammo-k";
-            k.textContent = game.i18n.localize("SWFFG.Ammo");
-            chip.appendChild(k);
             chip.addEventListener("click", (ev) => ev.stopPropagation());
             card.appendChild(chip);
+        } else {
+            // Reusing the system's core chip: hide its "AMMO" label — our panel
+            // carries its own centered title instead.
+            chip.querySelector(".cdx-ammo-k")?.style.setProperty("display", "none");
         }
+
+        // Self-contained panel (its own block) mirroring the .cdx-idesc look: an
+        // accent header bar over a paper body, themed via the inherited --cdx-*
+        // vars so it works on every scheme with no module stylesheet. Layout:
+        // centered title on the first row, then the selector + magazine inline.
+        const panel = document.createElement("div");
+        panel.className = "cdx-ammo-special-panel";
+        Object.assign(panel.style, {
+            display: "flex", flexDirection: "column", width: "100%",
+            background: "var(--cdx-paper2)", border: "1px solid var(--cdx-line)", borderRadius: "4px",
+        });
+
+        const title = document.createElement("div");
+        title.className = "cdx-ammo-special-title";
+        title.textContent = game.i18n.localize("ffg-star-wars-enhancements.special-ammo.selector-title");
+        Object.assign(title.style, {
+            background: "var(--cdx-accent)", color: "#fff", textAlign: "center",
+            fontFamily: "Orbitron", fontWeight: "700", fontSize: "10px", letterSpacing: "1.2px",
+            textTransform: "uppercase", padding: "5px 10px", borderRadius: "4px 4px 0 0",
+        });
+
+        const row = document.createElement("div");
+        row.className = "cdx-ammo-special-row";
+        Object.assign(row.style, {
+            display: "flex", flexDirection: "row", alignItems: "center", justifyContent: "center",
+            gap: "10px", padding: "8px 10px",
+        });
+
+        // Slot holding either the loaded ammo's magazine or — when nothing is loaded
+        // — the system's core stepper, kept inline to the right of the selector. Move
+        // the core stepper (if any) in here; it stays a descendant of .cdx-ammo, so
+        // the system's closest(".cdx-ammo") click handler keeps working.
+        const stepperSlot = document.createElement("div");
+        stepperSlot.className = "cdx-ammo-special-slot";
+        Object.assign(stepperSlot.style, { display: "flex", alignItems: "center" });
+        const movedCore = chip.querySelector(".cdx-ammo-stepper:not(.cdx-ammo-special-stepper)");
+        if (movedCore) stepperSlot.appendChild(movedCore);
 
         // Selector — a custom dropdown of regular elements (a native <select>
         // popup ignores CSS in Foundry's Chromium build and renders unreadable on
@@ -379,8 +418,8 @@ async function _injectCodexSpecialAmmo(actor, root) {
         const dropdown = document.createElement("div");
         dropdown.className = "cdx-ammo-select cdx-ammo-special";
         Object.assign(dropdown.style, {
-            position: "relative", minWidth: "300px", width: "fit-content", fontFamily: "Orbitron",
-            fontSize: "10px", color: "var(--cdx-ink)", cursor: "pointer", userSelect: "none",
+            position: "relative", flex: "1 1 auto", minWidth: "0",
+            fontFamily: "Orbitron", fontSize: "10px", color: "var(--cdx-ink)", cursor: "pointer", userSelect: "none",
         });
 
         const trigger = document.createElement("div");
@@ -388,20 +427,23 @@ async function _injectCodexSpecialAmmo(actor, root) {
         Object.assign(trigger.style, {
             display: "flex", alignItems: "center", justifyContent: "space-between",
             gap: "6px", background: "var(--cdx-paper)", border: "1px solid var(--cdx-line)",
-            borderRadius: "3px", padding: "2px 6px",
+            borderRadius: "3px", padding: "3px 8px",
         });
         const triggerLabel = document.createElement("span");
-        Object.assign(triggerLabel.style, { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" });
+        Object.assign(triggerLabel.style, { flex: "1", minWidth: "0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" });
         triggerLabel.textContent = labelFor(selectedAmmo);
         const caret = document.createElement("i");
         caret.className = "fas fa-caret-down";
         trigger.append(triggerLabel, caret);
 
+        // Absolutely positioned so opening the list overlays the content below
+        // rather than pushing the inline stepper around.
         const optionsBox = document.createElement("div");
         optionsBox.className = "cdx-ammo-options";
         Object.assign(optionsBox.style, {
-            display: "none", width: "100%", marginTop: "2px", background: "var(--cdx-paper)",
-            border: "1px solid var(--cdx-line)", borderRadius: "3px", maxHeight: "160px", overflowY: "auto",
+            display: "none", position: "absolute", top: "100%", left: "0", width: "100%", marginTop: "2px",
+            zIndex: "100", background: "var(--cdx-paper)", border: "1px solid var(--cdx-line)", borderRadius: "3px",
+            maxHeight: "160px", overflowY: "auto", boxShadow: "0 4px 14px rgba(0,0,0,.45)",
         });
 
         const paintOption = (opt) => {
@@ -424,20 +466,22 @@ async function _injectCodexSpecialAmmo(actor, root) {
         for (const it of validItems) addOption(it.id, it.name);
 
         dropdown.append(trigger, optionsBox);
-        // Insert the selector just under the chip's "Ammo" label.
-        const label = chip.querySelector(".cdx-ammo-k");
-        if (label) label.after(dropdown); else chip.appendChild(dropdown);
+
+        // Assemble the panel: centered title row, then selector + stepper inline.
+        row.append(dropdown, stepperSlot);
+        panel.append(title, row);
+        chip.appendChild(panel);
 
         // Show the special magazine for the loaded ammo, or the core stepper when
-        // nothing is loaded. "Special if loaded, else core."
+        // nothing is loaded. "Special if loaded, else core." Both live in stepperSlot.
         const applySelection = (selId) => {
             const selItem = selId ? validItems.find((i) => i.id === selId) : null;
-            chip.querySelector(".cdx-ammo-special-stepper")?.remove();
+            stepperSlot.querySelector(".cdx-ammo-special-stepper")?.remove();
             // The system's core stepper, if any, is the .cdx-ammo-stepper that is NOT ours.
-            const coreStepper = chip.querySelector(".cdx-ammo-stepper:not(.cdx-ammo-special-stepper)");
+            const coreStepper = stepperSlot.querySelector(".cdx-ammo-stepper:not(.cdx-ammo-special-stepper)");
             if (selItem) {
                 if (coreStepper) coreStepper.style.display = "none";
-                chip.appendChild(_buildCodexMagazine(selItem));
+                stepperSlot.appendChild(_buildCodexMagazine(selItem));
             } else if (coreStepper) {
                 coreStepper.style.display = "";
             }
