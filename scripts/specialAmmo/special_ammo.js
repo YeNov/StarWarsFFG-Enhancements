@@ -399,18 +399,45 @@ async function _injectCodexAmmoGear(actor, root) {
         // Idempotency — the sheet re-renders often; never double-inject.
         if (card.querySelector(".cdx-ammo-gear")) continue;
 
-        // A .cdx-ammo block so the system CSS centers + reveals it on expand; the
-        // .cdx-ammo-gear marker is for idempotency and to distinguish it from the
-        // weapon chips. Clicks are swallowed so adjusting ammo doesn't collapse it.
+        // Host .cdx-ammo block — the system CSS centers + reveals it on card expand;
+        // the .cdx-ammo-gear marker is for idempotency. Clicks are swallowed so
+        // adjusting ammo doesn't collapse the card.
         const chip = document.createElement("div");
         chip.className = "cdx-ammo cdx-ammo-gear";
         chip.addEventListener("click", (ev) => ev.stopPropagation());
 
+        // Self-contained panel matching the weapon card: an accent header bar over a
+        // paper body, with the "Ammo" label and the +/- stepper inline.
+        const panel = document.createElement("div");
+        panel.className = "cdx-ammo-special-panel";
+        Object.assign(panel.style, {
+            display: "flex", flexDirection: "column", width: "100%",
+            background: "var(--cdx-paper2)", border: "1px solid var(--cdx-line)", borderRadius: "4px",
+        });
+
+        const title = document.createElement("div");
+        title.className = "cdx-ammo-special-title";
+        title.textContent = game.i18n.localize("ffg-star-wars-enhancements.special-ammo.section-title");
+        Object.assign(title.style, {
+            background: "var(--cdx-accent)", color: "#fff", textAlign: "center",
+            fontFamily: "Orbitron", fontWeight: "700", fontSize: "10px", letterSpacing: "1.2px",
+            textTransform: "uppercase", padding: "5px 10px", borderRadius: "4px 4px 0 0",
+        });
+
+        const row = document.createElement("div");
+        row.className = "cdx-ammo-special-row";
+        Object.assign(row.style, {
+            display: "flex", flexDirection: "row", alignItems: "center", justifyContent: "center",
+            gap: "10px", padding: "8px 10px",
+        });
+
         const label = document.createElement("span");
         label.className = "cdx-ammo-k";
         label.textContent = game.i18n.localize("ffg-star-wars-enhancements.special-ammo.ammo");
-        chip.append(label, _buildCodexMagazine(gear));
 
+        row.append(label, _buildCodexMagazine(gear));
+        panel.append(title, row);
+        chip.appendChild(panel);
         card.appendChild(chip);
     }
 }
