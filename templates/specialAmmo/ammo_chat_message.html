@@ -3,7 +3,7 @@
         {{#if ammoImg}}
         <img src="{{ammoImg}}" style="width: 20px; height: 20px; border: none; margin-right: 6px;" />
         {{/if}}
-        {{ammoName}} ({{ammoCurrent}}/{{ammoMax}})
+        <span>{{ammoName}} ({{ammoCurrent}}/{{ammoMax}}) · {{localize "ffg-star-wars-enhancements.special-ammo.chat-magazines-left"}}: {{magazinesLeft}}</span>
     </summary>
     <div style="margin-top: 5px;">
         {{#if description}}

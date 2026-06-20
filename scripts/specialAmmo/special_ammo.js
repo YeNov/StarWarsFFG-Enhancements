@@ -50,11 +50,6 @@ export function hooks() {
     // "renderChatMessageHTML", which hands a native HTMLElement. Normalize back
     // to jQuery so the .find()/.append()/.on() calls below keep working.
     Hooks.on("renderChatMessageHTML", async (message, html, messageData) => {
-        // DIAGNOSTIC (temporary): confirm the hook fires for roll messages and show
-        // what the roll carries, so we can see why no special-ammo block appears.
-        if (message.rolls?.length) {
-            console.warn(`${MODULE_ID} | special-ammo DIAG: hook fired for roll msg ${message.id}; enabled=${game.settings.get(MODULE_ID, SETTING_ENABLE)}; roll.data=`, message.rolls[0]?.data);
-        }
         if (!game.settings.get(MODULE_ID, SETTING_ENABLE)) return;
         html = html instanceof HTMLElement ? $(html) : html;
         // Prevent processing the same rendered element twice.
@@ -67,15 +62,13 @@ export function hooks() {
         // single shot and could even flip a still-loaded weapon to empty.
         // _getAmmoSnapshot shares one in-flight computation per message id and
         // persists the result as a flag, so every later render (incl. after a page
-        // reload) reuses it verbatim.
-        // A render hook must never throw unhandled — surface failures instead of
-        // silently producing no card.
+        // reload) reuses it verbatim. A render hook must never throw unhandled.
         try {
             const snapshot = await _getAmmoSnapshot(message);
             if (!snapshot) return;
             await _renderSpecialAmmoBlock(html, snapshot);
         } catch (e) {
-            console.error(`${MODULE_ID} | special-ammo chat render failed:`, e);
+            log("special_ammo", `chat render failed: ${e}`);
         }
     });
 
@@ -142,11 +135,7 @@ async function _computeAmmoResult(message) {
     if (!message.rolls || message.rolls.length === 0) return null;
 
     const roll = message.rolls[0];
-    // DIAGNOSTIC (temporary): trace weapon resolution for roll messages so a "no
-    // special-ammo block" report can be pinpointed from the console.
-    const diag = (reason) => { console.warn(`${MODULE_ID} | special-ammo DIAG: bail — ${reason}`); return null; };
-
-    if (!roll.data || jQuery.isEmptyObject(roll.data)) return diag(`roll.data is empty (roll not made from a weapon?) data=${JSON.stringify(roll.data)}`);
+    if (!roll.data || jQuery.isEmptyObject(roll.data)) return null;
 
     // The roll carries a SNAPSHOT of the weapon whose _id is a throwaway/transient
     // id (system 2.0.3 builds the roll from a temporary item). The LIVE weapon is
@@ -170,65 +159,70 @@ async function _computeAmmoResult(message) {
         }
     }
 
-    if (!weapon || weapon.type !== "weapon") {
-        return diag(`could not resolve live weapon (uuid=${weaponUuid ?? "none"}, id=${roll.data._id}, name=${roll.data.name})`);
-    }
+    if (!weapon || weapon.type !== "weapon") return null;
 
     const actor = weapon.actor;
-    if (!actor) return diag(`weapon "${weapon.name}" has no parent actor`);
+    if (!actor) return null;
 
     const flagData = weapon.getFlag(MODULE_ID, FLAG_SPECIAL_AMMO);
-    if (!flagData?.hasSpecialAmmo) return diag(`weapon "${weapon.name}" hasSpecialAmmo=${flagData?.hasSpecialAmmo} (flag=${JSON.stringify(flagData)})`);
-
-    // From here this IS a special-ammo weapon, so a chat block is expected; any
-    // bail below is a misconfiguration worth surfacing. (Diagnostic — pinpoints a
-    // "card not rendering" report from the console without flooding it for normal
-    // messages, which already returned above.)
-    const bail = (reason) => {
-        console.warn(`${MODULE_ID} | special-ammo: "${weapon.name}" fired but produced no chat block — ${reason}`);
-        return null;
-    };
+    if (!flagData?.hasSpecialAmmo) return null;
 
     const selectedAmmoId = flagData.selectedAmmo;
-    if (!selectedAmmoId) return bail("weapon's selectedAmmo flag is empty (no ammo loaded / selection was cleared)");
+    if (!selectedAmmoId) return null;
 
     const ammoItem = actor.items.get(selectedAmmoId);
-    if (!ammoItem) return bail(`selected ammo id ${selectedAmmoId} is not in ${actor.name}'s inventory`);
+    if (!ammoItem) {
+        log("special_ammo", "Selected ammo item no longer exists in inventory");
+        return null;
+    }
 
     const ammoData = ammoItem.getFlag(MODULE_ID, FLAG_AMMO_DATA);
-    if (!ammoData || !ammoData.canBeUsedAsAmmo) return bail(`ammo "${ammoItem.name}" is not flagged "Can Be Used As Ammo"`);
+    if (!ammoData || !ammoData.canBeUsedAsAmmo) return null;
 
     const rawDescription = ammoItem.system?.description || "";
     const description = rawDescription
         ? await TextEditor.enrichHTML(rawDescription)
         : "";
-    // Magazine count for the loaded ammo. Only the roll's author spends a round,
-    // and only when one is loaded — clamped so it never reads below zero. There is
-    // no "out of ammo" state: an empty magazine simply shows 0/max.
-    let newCurrent = Number(ammoData.ammoCurrent) || 0;
-    if (message.author?.id === game.user.id && newCurrent > 0) {
-        newCurrent -= 1;
-        await ammoItem.setFlag(MODULE_ID, FLAG_AMMO_DATA, {
-            ...ammoData,
-            ammoCurrent: newCurrent,
-        });
-        log("special_ammo", `Used 1 ammo from ${ammoItem.name}. Remaining: ${newCurrent}/${ammoData.ammoMax}`);
+    // Spend a round. With auto-deplete the clip is backed by the item Quantity
+    // (each Quantity = one clip of ammoMax): an empty clip is refilled from the
+    // spares it is already counted against, and a clip that runs dry chambers the
+    // next spare — so firing never strands ammo. Without auto-deplete the clip just
+    // depletes and is reloaded by hand. Only the roll's author mutates state.
+    // Quantity is the real ammo counter.
+    const _isAuthor = message.author?.id === game.user.id;
+    const _autoDeplete = game.settings.get(MODULE_ID, SETTING_AUTO_DEPLETE);
 
-        // Auto-deplete: when the magazine hits 0, spend a spare and reload to max
-        // (or zero the quantity if it was the last one). The quantity change and
-        // magazine reset are merged into one update() so the item re-renders once.
-        if (newCurrent <= 0 && game.settings.get(MODULE_ID, SETTING_AUTO_DEPLETE)) {
-            const currentQty = ammoItem.system?.quantity?.value ?? ammoItem.system?.quantity ?? 0;
-            if (currentQty > 1) {
-                await ammoItem.update({
-                    "system.quantity.value": currentQty - 1,
-                    flags: { [MODULE_ID]: { [FLAG_AMMO_DATA]: { ...ammoData, ammoCurrent: ammoData.ammoMax } } },
-                });
-                log("special_ammo", `Depleted magazine for ${ammoItem.name}. Quantity: ${currentQty - 1}. Ammo reset to ${ammoData.ammoMax}.`);
-            } else {
-                await ammoItem.update({ "system.quantity.value": 0 });
-                log("special_ammo", `Last magazine depleted for ${ammoItem.name}.`);
+    let newCurrent = Number(ammoData.ammoCurrent) || 0;
+    if (_isAuthor) {
+        const max = Number(ammoData.ammoMax) || 0;
+        let cur = newCurrent;
+        const qty0 = Number(ammoItem.system?.quantity?.value ?? ammoItem.system?.quantity ?? 0) || 0;
+        let qty = qty0;
+
+        // Un-stick an empty clip: refill it from the spares it is already counted
+        // against (no extra spare spent). This is what lets firing resume when a
+        // clip got stranded at 0 with Quantity still behind it.
+        if (cur <= 0 && _autoDeplete && max > 0 && qty > 0) {
+            cur = max;
+        }
+
+        if (cur > 0) {
+            cur -= 1;   // spend the round
+
+            // Reload-after-empty: a clip that runs dry discards and chambers the next
+            // spare; the last clip just empties.
+            if (cur <= 0 && _autoDeplete && max > 0) {
+                if (qty > 1) { qty -= 1; cur = max; }
+                else { qty = 0; }
             }
+
+            // TWO separate writes — both proven to persist in this build. A single
+            // update() mixing the dotted system path with a nested flags object did
+            // NOT reliably land the flag, which is what stranded clips at 0.
+            if (qty !== qty0) await ammoItem.update({ "system.quantity.value": qty });
+            await ammoItem.setFlag(MODULE_ID, FLAG_AMMO_DATA, { ...ammoData, ammoCurrent: cur });
+            newCurrent = cur;
+            log("special_ammo", `Used 1 ammo from ${ammoItem.name}. Clip ${cur}/${max}, ${qty} remaining.`);
         }
     }
 
