@@ -1,5 +1,12 @@
 import { log_msg as log } from "../util.js";
 
+// V13 moved these former globals into namespaces; the bare `renderTemplate` /
+// `TextEditor` globals are deprecated and warn until v15. Alias the namespaced
+// versions once — falling back to the global only if the namespace isn't present —
+// so the call sites below stay clean and quiet.
+const renderTemplate = foundry.applications?.handlebars?.renderTemplate ?? globalThis.renderTemplate;
+const TextEditor = foundry.applications?.ux?.TextEditor ?? globalThis.TextEditor;
+
 const MODULE_ID = "ffg-star-wars-enhancements";
 const FLAG_SPECIAL_AMMO = "special-ammo";
 const FLAG_AMMO_DATA = "ammo-data";
@@ -55,24 +62,21 @@ export function hooks() {
         // Prevent processing the same rendered element twice.
         if (html.find(".special-ammo-chat").length > 0) return;
 
-        // A chat message is immutable. Compute the ammo result ONCE (on the
-        // author's first render — decrementing the magazine) and store it as a
-        // message flag; every later render, including after a page reload,
-        // re-displays that stored snapshot verbatim. This is what keeps a card
-        // that showed "0/1" from turning into "out of ammo" on reload, and
-        // prevents the magazine from being decremented twice.
-        let snapshot = message.getFlag(MODULE_ID, FLAG_AMMO_RESULT);
-        if (!snapshot) {
-            snapshot = await _computeAmmoResult(message);
+        // Resolve the ammo result ONCE per message. The computation decrements the
+        // magazine, so concurrent re-renders of the SAME message (Dice So Nice's
+        // re-render after the 3D roll, chat pop-outs, and the snapshot setFlag's own
+        // re-render) must not each recompute — that would spend several rounds for a
+        // single shot and could even flip a still-loaded weapon to empty.
+        // _getAmmoSnapshot shares one in-flight computation per message id and
+        // persists the result as a flag, so every later render (incl. after a page
+        // reload) reuses it verbatim. A render hook must never throw unhandled.
+        try {
+            const snapshot = await _getAmmoSnapshot(message);
             if (!snapshot) return;
-            if (message.author?.id === game.user.id) {
-                try {
-                    await message.setFlag(MODULE_ID, FLAG_AMMO_RESULT, snapshot);
-                } catch (e) { /* can't persist (e.g. permissions) — still render this session */ }
-            }
+            await _renderSpecialAmmoBlock(html, snapshot);
+        } catch (e) {
+            log("special_ammo", `chat render failed: ${e}`);
         }
-
-        await _renderSpecialAmmoBlock(html, snapshot);
     });
 
     // Codex weapon cards (starwarsffg system). The Codex sheet renders only the
@@ -86,6 +90,7 @@ export function hooks() {
             if (!root) return;
             try {
                 await _injectCodexSpecialAmmo(app.document ?? app.actor, root);
+                await _injectCodexAmmoGear(app.document ?? app.actor, root);
             } catch (e) {
                 log("special_ammo", `Codex special-ammo injection failed: ${e}`);
             }
@@ -93,12 +98,46 @@ export function hooks() {
     }
 }
 
+// In-flight snapshot computations keyed by message id (see _getAmmoSnapshot).
+const _ammoSnapshots = new Map();
+
+/**
+ * Resolve the special-ammo snapshot for a message, computing it AT MOST ONCE.
+ * The render hook can fire repeatedly for one message before the first run's flag
+ * write lands; sharing the in-flight promise by message id guarantees the magazine
+ * is decremented exactly once. Returns null for non-special messages.
+ */
+async function _getAmmoSnapshot(message) {
+    const existing = message.getFlag(MODULE_ID, FLAG_AMMO_RESULT);
+    if (existing) return existing;
+    if (_ammoSnapshots.has(message.id)) return _ammoSnapshots.get(message.id);
+
+    const promise = (async () => {
+        const snapshot = await _computeAmmoResult(message);
+        // Only the author persists (and only the author decremented); other clients
+        // render their freshly computed copy until the flag syncs to them.
+        if (snapshot && message.author?.id === game.user.id) {
+            try {
+                await message.setFlag(MODULE_ID, FLAG_AMMO_RESULT, snapshot);
+            } catch (e) { /* can't persist (e.g. permissions) — still render this session */ }
+        }
+        return snapshot;
+    })();
+    _ammoSnapshots.set(message.id, promise);
+    try {
+        return await promise;
+    } finally {
+        _ammoSnapshots.delete(message.id);
+    }
+}
+
 /**
  * Compute the special-ammo result for a weapon-roll chat message: resolve the
  * loaded ammo, (on the author's client) decrement the magazine and run
  * auto-deplete, and return the template data for the chat block. Returns null
- * when the message isn't a special-ammo weapon roll. Called once per message;
- * the result is snapshotted onto the message so re-renders never recompute.
+ * when the message isn't a special-ammo weapon roll. Run once per message via
+ * _getAmmoSnapshot; the result is snapshotted onto the message so re-renders
+ * never recompute.
  */
 async function _computeAmmoResult(message) {
     if (!message.rolls || message.rolls.length === 0) return null;
@@ -106,22 +145,32 @@ async function _computeAmmoResult(message) {
     const roll = message.rolls[0];
     if (!roll.data || jQuery.isEmptyObject(roll.data)) return null;
 
-    const itemId = roll.data._id;
-    if (!itemId) return null;
+    // The roll carries a SNAPSHOT of the weapon whose _id is a throwaway/transient
+    // id (system 2.0.3 builds the roll from a temporary item). The LIVE weapon is
+    // referenced by uuid — this is exactly how the system itself resolves it to
+    // decrement core ammo (roll-builder.js: fromUuid(this.roll.item.uuid)). Resolve
+    // by uuid first; fall back to id/name on the speaker's actor for older rolls.
+    const weaponUuid = roll.data.uuid || roll.data.flags?.starwarsffg?.uuid;
+    let weapon = weaponUuid ? await fromUuid(weaponUuid) : null;
 
-    // Get actor from speaker
-    const speakerActorId = message.speaker?.actor;
-    if (!speakerActorId) return null;
-
-    const speakerTokenId = message.speaker?.token;
-    let actor = speakerTokenId ? game.actors.tokens[speakerTokenId] : null;
-    if (!actor) {
-        actor = game.actors.get(speakerActorId);
+    if (!weapon) {
+        const speaker = message.speaker || {};
+        let actor = null;
+        if (speaker.token) {
+            actor = (speaker.scene ? game.scenes.get(speaker.scene) : null)?.tokens?.get(speaker.token)?.actor
+                 ?? game.actors?.tokens?.[speaker.token] ?? null;
+        }
+        if (!actor && speaker.actor) actor = game.actors.get(speaker.actor);
+        if (actor) {
+            weapon = actor.items.get(roll.data._id)
+                  || (roll.data.name ? actor.items.find((i) => i.type === "weapon" && i.name === roll.data.name) : null);
+        }
     }
-    if (!actor) return null;
 
-    const weapon = actor.items.get(itemId);
     if (!weapon || weapon.type !== "weapon") return null;
+
+    const actor = weapon.actor;
+    if (!actor) return null;
 
     const flagData = weapon.getFlag(MODULE_ID, FLAG_SPECIAL_AMMO);
     if (!flagData?.hasSpecialAmmo) return null;
@@ -142,54 +191,62 @@ async function _computeAmmoResult(message) {
     const description = rawDescription
         ? await TextEditor.enrichHTML(rawDescription)
         : "";
-    let newCurrent;
-    let outOfAmmo = false;
+    // Spend a round. With auto-deplete the clip is backed by the item Quantity
+    // (each Quantity = one clip of ammoMax): an empty clip is refilled from the
+    // spares it is already counted against, and a clip that runs dry chambers the
+    // next spare — so firing never strands ammo. Without auto-deplete the clip just
+    // depletes and is reloaded by hand. Only the roll's author mutates state.
+    // Quantity is the real ammo counter.
+    const _isAuthor = message.author?.id === game.user.id;
+    const _autoDeplete = game.settings.get(MODULE_ID, SETTING_AUTO_DEPLETE);
 
-    if (ammoData.ammoCurrent <= 0) {
-        outOfAmmo = true;
-        newCurrent = 0;
-        log("special_ammo", `Out of ammo for ${ammoItem.name}`);
-    } else {
-        // Only decrement if this is our own roll (prevent other clients from decrementing too)
-        if (message.author?.id === game.user.id) {
-            newCurrent = ammoData.ammoCurrent - 1;
-            await ammoItem.setFlag(MODULE_ID, FLAG_AMMO_DATA, {
-                ...ammoData,
-                ammoCurrent: newCurrent,
-            });
-            log("special_ammo", `Used 1 ammo from ${ammoItem.name}. Remaining: ${newCurrent}/${ammoData.ammoMax}`);
+    let newCurrent = Number(ammoData.ammoCurrent) || 0;
+    if (_isAuthor) {
+        const max = Number(ammoData.ammoMax) || 0;
+        let cur = newCurrent;
+        const qty0 = Number(ammoItem.system?.quantity?.value ?? ammoItem.system?.quantity ?? 0) || 0;
+        let qty = qty0;
 
-            // Auto-deplete: if ammo reached 0, decrease item quantity and reset/clear the magazine
-            if (newCurrent <= 0 && game.settings.get(MODULE_ID, SETTING_AUTO_DEPLETE)) {
-                const currentQty = ammoItem.system?.quantity?.value ?? ammoItem.system?.quantity ?? 0;
-                if (currentQty > 1) {
-                    // Decrease quantity by 1, reset ammo to max
-                    await ammoItem.update({ "system.quantity.value": currentQty - 1 });
-                    await ammoItem.setFlag(MODULE_ID, FLAG_AMMO_DATA, {
-                        ...ammoData,
-                        ammoCurrent: ammoData.ammoMax,
-                    });
-                    log("special_ammo", `Depleted magazine for ${ammoItem.name}. Quantity: ${currentQty - 1}. Ammo reset to ${ammoData.ammoMax}.`);
-                } else {
-                    // Last one — decrease quantity to 0
-                    await ammoItem.update({ "system.quantity.value": 0 });
-                    log("special_ammo", `Last magazine depleted for ${ammoItem.name}.`);
-                }
+        // Un-stick an empty clip: refill it from the spares it is already counted
+        // against (no extra spare spent). This is what lets firing resume when a
+        // clip got stranded at 0 with Quantity still behind it.
+        if (cur <= 0 && _autoDeplete && max > 0 && qty > 0) {
+            cur = max;
+        }
+
+        if (cur > 0) {
+            cur -= 1;   // spend the round
+
+            // Reload-after-empty: a clip that runs dry discards and chambers the next
+            // spare; the last clip just empties.
+            if (cur <= 0 && _autoDeplete && max > 0) {
+                if (qty > 1) { qty -= 1; cur = max; }
+                else { qty = 0; }
             }
-        } else {
-            newCurrent = ammoData.ammoCurrent;
+
+            // TWO separate writes — both proven to persist in this build. A single
+            // update() mixing the dotted system path with a nested flags object did
+            // NOT reliably land the flag, which is what stranded clips at 0.
+            if (qty !== qty0) await ammoItem.update({ "system.quantity.value": qty });
+            await ammoItem.setFlag(MODULE_ID, FLAG_AMMO_DATA, { ...ammoData, ammoCurrent: cur });
+            newCurrent = cur;
+            log("special_ammo", `Used 1 ammo from ${ammoItem.name}. Clip ${cur}/${max}, ${qty} remaining.`);
         }
     }
 
     const magazinesLeft = ammoItem.system?.quantity?.value ?? ammoItem.system?.quantity ?? 0;
-    const qualities = (ammoItem.system?.itemmodifier || []).map((mod) => {
+    // Enrich each quality's description up front so the chat pill can carry it in a
+    // data-tooltip set at render time. Setting the tooltip lazily on mouseenter is
+    // too late — Foundry's tooltip manager already handled the hover.
+    const qualities = await Promise.all((ammoItem.system?.itemmodifier || []).map(async (mod) => {
         const name = mod.name || "";
         const rank = parseInt(mod.system?.rank) || 0;
+        const rawDesc = mod.system?.description || "";
         return {
             label: rank ? `${name} ${rank}` : name,
-            qualityId: mod._id || "",
+            description: rawDesc ? await TextEditor.enrichHTML(rawDesc) : "",
         };
-    });
+    }));
 
     return {
         ammoName: ammoItem.name,
@@ -198,17 +255,15 @@ async function _computeAmmoResult(message) {
         ammoCurrent: newCurrent,
         ammoMax: ammoData.ammoMax,
         weaponName: weapon.name,
-        outOfAmmo: outOfAmmo,
         magazinesLeft: magazinesLeft,
         qualities: qualities,
-        ammoItemId: ammoItem.id,
-        actorId: actor.id,
     };
 }
 
 /**
- * Render the special-ammo chat block from a (snapshotted) template-data object
- * and wire the lazy quality-description tooltips.
+ * Render the special-ammo chat block from a (snapshotted) template-data object.
+ * Quality pills carry their (enriched) description in a data-tooltip baked into the
+ * template, so the tooltip shows on hover with no extra wiring.
  */
 async function _renderSpecialAmmoBlock(html, templateData) {
     const ammoHtml = await renderTemplate(
@@ -216,28 +271,6 @@ async function _renderSpecialAmmoBlock(html, templateData) {
         templateData
     );
     html.append(ammoHtml);
-
-    // Lazy-load quality descriptions on hover
-    html.find(".special-ammo-quality-pill").on("mouseenter", async function () {
-        const pill = $(this);
-        if (pill.data("tooltip-loaded")) return;
-        const qualityId = pill.data("quality-id");
-        const ammoId = pill.data("ammo-id");
-        const actId = pill.data("actor-id");
-        const act = game.actors.get(actId);
-        if (!act) return;
-        const ammo = act.items.get(ammoId);
-        if (!ammo) return;
-        const mod = (ammo.system?.itemmodifier || []).find((m) => m._id === qualityId);
-        if (!mod) return;
-        const desc = mod.system?.description || "";
-        if (desc) {
-            const enriched = await TextEditor.enrichHTML(desc);
-            pill.attr("data-tooltip", enriched);
-            pill.attr("data-tooltip-direction", "UP");
-        }
-        pill.data("tooltip-loaded", true);
-    });
 }
 
 /**
@@ -258,12 +291,36 @@ function _getValidAmmoItems(weapon) {
 
     if (allowedNames.length === 0) return [];
 
-    return actor.items.filter((item) => {
-        if (item.type !== "gear") return false;
-        const ammoData = item.getFlag(MODULE_ID, FLAG_AMMO_DATA);
-        if (!ammoData?.canBeUsedAsAmmo) return false;
-        return allowedNames.includes(item.name.toLowerCase());
-    });
+    // Resolve each filter name to a usable ammo item, recording why a named item is
+    // skipped. A gear item qualifies only if it (a) exists in inventory, (b) is type
+    // "gear", and (c) has "Can Be Used As Ammo" enabled on its own sheet — naming it
+    // in the weapon's filter is necessary but NOT sufficient (that flag also stores
+    // the magazine size). The skip reasons surface in the console when starwarsffg
+    // debug logging is on, turning a silently empty dropdown into an explanation.
+    const valid = [];
+    const skipped = [];
+    for (const name of allowedNames) {
+        const named = actor.items.filter((i) => i.name.toLowerCase() === name);
+        if (named.length === 0) {
+            skipped.push(`"${name}" — no item by that name in inventory`);
+            continue;
+        }
+        const gear = named.filter((i) => i.type === "gear");
+        if (gear.length === 0) {
+            skipped.push(`"${name}" — exists but is type '${named[0].type}', not 'gear'`);
+            continue;
+        }
+        const usable = gear.filter((i) => i.getFlag(MODULE_ID, FLAG_AMMO_DATA)?.canBeUsedAsAmmo === true);
+        if (usable.length === 0) {
+            skipped.push(`"${name}" — gear item found but "Can Be Used As Ammo" is not enabled on it`);
+            continue;
+        }
+        valid.push(...usable);
+    }
+    if (skipped.length) {
+        log("special_ammo", `Ammo selector for "${weapon.name}": ${valid.length} usable, ${skipped.length} skipped — ${skipped.join("; ")}`);
+    }
+    return valid;
 }
 
 /**
@@ -323,6 +380,69 @@ function _buildCodexMagazine(ammoItem) {
 }
 
 /**
+ * Show a magazine +/- stepper on the Codex GEAR card (for items flagged as ammo),
+ * mirroring the weapon card: a .cdx-ammo block the system CSS reveals (centered)
+ * when the card is expanded. The stepper adjusts THIS gear item's ammo-data — it
+ * IS the ammo — reusing _buildCodexMagazine. Idempotent: the hook fires on every
+ * render, so we never double-inject.
+ */
+async function _injectCodexAmmoGear(actor, root) {
+    if (!actor) return;
+
+    for (const card of root.querySelectorAll(".cdx-card.gear[data-item-id]")) {
+        const gear = actor.items.get(card.dataset.itemId);
+        if (!gear) continue;
+
+        const ammoData = gear.getFlag(MODULE_ID, FLAG_AMMO_DATA);
+        if (!ammoData?.canBeUsedAsAmmo) continue;
+
+        // Idempotency — the sheet re-renders often; never double-inject.
+        if (card.querySelector(".cdx-ammo-gear")) continue;
+
+        // Host .cdx-ammo block — the system CSS centers + reveals it on card expand;
+        // the .cdx-ammo-gear marker is for idempotency. Clicks are swallowed so
+        // adjusting ammo doesn't collapse the card.
+        const chip = document.createElement("div");
+        chip.className = "cdx-ammo cdx-ammo-gear";
+        chip.addEventListener("click", (ev) => ev.stopPropagation());
+
+        // Self-contained panel matching the weapon card: an accent header bar over a
+        // paper body, with the "Ammo" label and the +/- stepper inline.
+        const panel = document.createElement("div");
+        panel.className = "cdx-ammo-special-panel";
+        Object.assign(panel.style, {
+            display: "flex", flexDirection: "column", width: "100%",
+            background: "var(--cdx-paper2)", border: "1px solid var(--cdx-line)", borderRadius: "4px",
+        });
+
+        const title = document.createElement("div");
+        title.className = "cdx-ammo-special-title";
+        title.textContent = game.i18n.localize("ffg-star-wars-enhancements.special-ammo.section-title");
+        Object.assign(title.style, {
+            background: "var(--cdx-accent)", color: "#fff", textAlign: "center",
+            fontFamily: "Orbitron", fontWeight: "700", fontSize: "10px", letterSpacing: "1.2px",
+            textTransform: "uppercase", padding: "5px 10px", borderRadius: "4px 4px 0 0",
+        });
+
+        const row = document.createElement("div");
+        row.className = "cdx-ammo-special-row";
+        Object.assign(row.style, {
+            display: "flex", flexDirection: "row", alignItems: "center", justifyContent: "center",
+            gap: "10px", padding: "8px 10px",
+        });
+
+        const label = document.createElement("span");
+        label.className = "cdx-ammo-k";
+        label.textContent = game.i18n.localize("ffg-star-wars-enhancements.special-ammo.ammo");
+
+        row.append(label, _buildCodexMagazine(gear));
+        panel.append(title, row);
+        chip.appendChild(panel);
+        card.appendChild(chip);
+    }
+}
+
+/**
  * Inject the special-ammo selector (+ magazine when an ammo is loaded) into the
  * Codex weapon cards' ammo chip. Mirrors the renderItemSheet injection but for
  * the ApplicationV2 actor sheet, where the render hook hands us a native DOM
@@ -354,19 +474,58 @@ async function _injectCodexSpecialAmmo(actor, root) {
         }
 
         // Reuse the system's core-ammo chip if present (weapon has config.enableAmmo);
-        // otherwise create one — the system CSS then places + shows it on expand.
+        // otherwise create one — the system CSS then places + shows it (centered,
+        // full-width under the card) on expand. The chip is just our host container;
+        // the visible UI is the self-contained panel built below.
         let chip = card.querySelector(".cdx-ammo");
         if (!chip) {
             chip = document.createElement("div");
             chip.className = "cdx-ammo";
             chip.dataset.weaponId = weapon.id;
-            const k = document.createElement("span");
-            k.className = "cdx-ammo-k";
-            k.textContent = game.i18n.localize("SWFFG.Ammo");
-            chip.appendChild(k);
             chip.addEventListener("click", (ev) => ev.stopPropagation());
             card.appendChild(chip);
+        } else {
+            // Reusing the system's core chip: hide its "AMMO" label — our panel
+            // carries its own centered title instead.
+            chip.querySelector(".cdx-ammo-k")?.style.setProperty("display", "none");
         }
+
+        // Self-contained panel (its own block) mirroring the .cdx-idesc look: an
+        // accent header bar over a paper body, themed via the inherited --cdx-*
+        // vars so it works on every scheme with no module stylesheet. Layout:
+        // centered title on the first row, then the selector + magazine inline.
+        const panel = document.createElement("div");
+        panel.className = "cdx-ammo-special-panel";
+        Object.assign(panel.style, {
+            display: "flex", flexDirection: "column", width: "100%",
+            background: "var(--cdx-paper2)", border: "1px solid var(--cdx-line)", borderRadius: "4px",
+        });
+
+        const title = document.createElement("div");
+        title.className = "cdx-ammo-special-title";
+        title.textContent = game.i18n.localize("ffg-star-wars-enhancements.special-ammo.selector-title");
+        Object.assign(title.style, {
+            background: "var(--cdx-accent)", color: "#fff", textAlign: "center",
+            fontFamily: "Orbitron", fontWeight: "700", fontSize: "10px", letterSpacing: "1.2px",
+            textTransform: "uppercase", padding: "5px 10px", borderRadius: "4px 4px 0 0",
+        });
+
+        const row = document.createElement("div");
+        row.className = "cdx-ammo-special-row";
+        Object.assign(row.style, {
+            display: "flex", flexDirection: "row", alignItems: "center", justifyContent: "center",
+            gap: "10px", padding: "8px 10px",
+        });
+
+        // Slot holding either the loaded ammo's magazine or — when nothing is loaded
+        // — the system's core stepper, kept inline to the right of the selector. Move
+        // the core stepper (if any) in here; it stays a descendant of .cdx-ammo, so
+        // the system's closest(".cdx-ammo") click handler keeps working.
+        const stepperSlot = document.createElement("div");
+        stepperSlot.className = "cdx-ammo-special-slot";
+        Object.assign(stepperSlot.style, { display: "flex", alignItems: "center" });
+        const movedCore = chip.querySelector(".cdx-ammo-stepper:not(.cdx-ammo-special-stepper)");
+        if (movedCore) stepperSlot.appendChild(movedCore);
 
         // Selector — a custom dropdown of regular elements (a native <select>
         // popup ignores CSS in Foundry's Chromium build and renders unreadable on
@@ -379,8 +538,8 @@ async function _injectCodexSpecialAmmo(actor, root) {
         const dropdown = document.createElement("div");
         dropdown.className = "cdx-ammo-select cdx-ammo-special";
         Object.assign(dropdown.style, {
-            position: "relative", minWidth: "300px", width: "fit-content", fontFamily: "Orbitron",
-            fontSize: "10px", color: "var(--cdx-ink)", cursor: "pointer", userSelect: "none",
+            position: "relative", flex: "1 1 auto", minWidth: "0",
+            fontFamily: "Orbitron", fontSize: "10px", color: "var(--cdx-ink)", cursor: "pointer", userSelect: "none",
         });
 
         const trigger = document.createElement("div");
@@ -388,20 +547,23 @@ async function _injectCodexSpecialAmmo(actor, root) {
         Object.assign(trigger.style, {
             display: "flex", alignItems: "center", justifyContent: "space-between",
             gap: "6px", background: "var(--cdx-paper)", border: "1px solid var(--cdx-line)",
-            borderRadius: "3px", padding: "2px 6px",
+            borderRadius: "3px", padding: "3px 8px",
         });
         const triggerLabel = document.createElement("span");
-        Object.assign(triggerLabel.style, { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" });
+        Object.assign(triggerLabel.style, { flex: "1", minWidth: "0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" });
         triggerLabel.textContent = labelFor(selectedAmmo);
         const caret = document.createElement("i");
         caret.className = "fas fa-caret-down";
         trigger.append(triggerLabel, caret);
 
+        // Absolutely positioned so opening the list overlays the content below
+        // rather than pushing the inline stepper around.
         const optionsBox = document.createElement("div");
         optionsBox.className = "cdx-ammo-options";
         Object.assign(optionsBox.style, {
-            display: "none", width: "100%", marginTop: "2px", background: "var(--cdx-paper)",
-            border: "1px solid var(--cdx-line)", borderRadius: "3px", maxHeight: "160px", overflowY: "auto",
+            display: "none", position: "absolute", top: "100%", left: "0", width: "100%", marginTop: "2px",
+            zIndex: "100", background: "var(--cdx-paper)", border: "1px solid var(--cdx-line)", borderRadius: "3px",
+            maxHeight: "160px", overflowY: "auto", boxShadow: "0 4px 14px rgba(0,0,0,.45)",
         });
 
         const paintOption = (opt) => {
@@ -424,20 +586,22 @@ async function _injectCodexSpecialAmmo(actor, root) {
         for (const it of validItems) addOption(it.id, it.name);
 
         dropdown.append(trigger, optionsBox);
-        // Insert the selector just under the chip's "Ammo" label.
-        const label = chip.querySelector(".cdx-ammo-k");
-        if (label) label.after(dropdown); else chip.appendChild(dropdown);
+
+        // Assemble the panel: centered title row, then selector + stepper inline.
+        row.append(dropdown, stepperSlot);
+        panel.append(title, row);
+        chip.appendChild(panel);
 
         // Show the special magazine for the loaded ammo, or the core stepper when
-        // nothing is loaded. "Special if loaded, else core."
+        // nothing is loaded. "Special if loaded, else core." Both live in stepperSlot.
         const applySelection = (selId) => {
             const selItem = selId ? validItems.find((i) => i.id === selId) : null;
-            chip.querySelector(".cdx-ammo-special-stepper")?.remove();
+            stepperSlot.querySelector(".cdx-ammo-special-stepper")?.remove();
             // The system's core stepper, if any, is the .cdx-ammo-stepper that is NOT ours.
-            const coreStepper = chip.querySelector(".cdx-ammo-stepper:not(.cdx-ammo-special-stepper)");
+            const coreStepper = stepperSlot.querySelector(".cdx-ammo-stepper:not(.cdx-ammo-special-stepper)");
             if (selItem) {
                 if (coreStepper) coreStepper.style.display = "none";
-                chip.appendChild(_buildCodexMagazine(selItem));
+                stepperSlot.appendChild(_buildCodexMagazine(selItem));
             } else if (coreStepper) {
                 coreStepper.style.display = "";
             }
@@ -514,17 +678,16 @@ async function _injectWeaponAmmoUI(weapon, html) {
     const ammoFilter = flagData.ammoFilter || "";
     let selectedAmmo = flagData.selectedAmmo || "";
 
-    // Validate selected ammo still exists and is valid
+    // If the persisted selection doesn't currently resolve to a valid ammo item,
+    // show it as unselected — but do NOT persist a clear here. Writing during the
+    // render hook can race and wipe the flag (e.g. before the actor's gear items are
+    // ready on initial load, or while an ammoFilter typo transiently matches none).
+    // The selection is only ever cleared by an explicit user choice. Mirrors the
+    // Codex card path; a stale id resolves to no chat block, which is harmless.
     if (selectedAmmo && weapon.actor) {
         const validItems = _getValidAmmoItems(weapon);
-        const stillValid = validItems.find((i) => i.id === selectedAmmo);
-        if (!stillValid) {
+        if (!validItems.find((i) => i.id === selectedAmmo)) {
             selectedAmmo = "";
-            // Persist the cleared selection
-            await weapon.setFlag(MODULE_ID, FLAG_SPECIAL_AMMO, {
-                ...flagData,
-                selectedAmmo: "",
-            });
         }
     }
 
