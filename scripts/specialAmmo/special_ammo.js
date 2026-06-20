@@ -50,29 +50,33 @@ export function hooks() {
     // "renderChatMessageHTML", which hands a native HTMLElement. Normalize back
     // to jQuery so the .find()/.append()/.on() calls below keep working.
     Hooks.on("renderChatMessageHTML", async (message, html, messageData) => {
+        // DIAGNOSTIC (temporary): confirm the hook fires for roll messages and show
+        // what the roll carries, so we can see why no special-ammo block appears.
+        if (message.rolls?.length) {
+            console.warn(`${MODULE_ID} | special-ammo DIAG: hook fired for roll msg ${message.id}; enabled=${game.settings.get(MODULE_ID, SETTING_ENABLE)}; roll.data=`, message.rolls[0]?.data);
+        }
         if (!game.settings.get(MODULE_ID, SETTING_ENABLE)) return;
         html = html instanceof HTMLElement ? $(html) : html;
         // Prevent processing the same rendered element twice.
         if (html.find(".special-ammo-chat").length > 0) return;
 
-        // A chat message is immutable. Compute the ammo result ONCE (on the
-        // author's first render — decrementing the magazine) and store it as a
-        // message flag; every later render, including after a page reload,
-        // re-displays that stored snapshot verbatim. This is what keeps a card
-        // that showed "0/1" from turning into "out of ammo" on reload, and
-        // prevents the magazine from being decremented twice.
-        let snapshot = message.getFlag(MODULE_ID, FLAG_AMMO_RESULT);
-        if (!snapshot) {
-            snapshot = await _computeAmmoResult(message);
+        // Resolve the ammo result ONCE per message. The computation decrements the
+        // magazine, so concurrent re-renders of the SAME message (Dice So Nice's
+        // re-render after the 3D roll, chat pop-outs, and the snapshot setFlag's own
+        // re-render) must not each recompute — that would spend several rounds for a
+        // single shot and could even flip a still-loaded weapon to empty.
+        // _getAmmoSnapshot shares one in-flight computation per message id and
+        // persists the result as a flag, so every later render (incl. after a page
+        // reload) reuses it verbatim.
+        // A render hook must never throw unhandled — surface failures instead of
+        // silently producing no card.
+        try {
+            const snapshot = await _getAmmoSnapshot(message);
             if (!snapshot) return;
-            if (message.author?.id === game.user.id) {
-                try {
-                    await message.setFlag(MODULE_ID, FLAG_AMMO_RESULT, snapshot);
-                } catch (e) { /* can't persist (e.g. permissions) — still render this session */ }
-            }
+            await _renderSpecialAmmoBlock(html, snapshot);
+        } catch (e) {
+            console.error(`${MODULE_ID} | special-ammo chat render failed:`, e);
         }
-
-        await _renderSpecialAmmoBlock(html, snapshot);
     });
 
     // Codex weapon cards (starwarsffg system). The Codex sheet renders only the
@@ -93,91 +97,138 @@ export function hooks() {
     }
 }
 
+// In-flight snapshot computations keyed by message id (see _getAmmoSnapshot).
+const _ammoSnapshots = new Map();
+
+/**
+ * Resolve the special-ammo snapshot for a message, computing it AT MOST ONCE.
+ * The render hook can fire repeatedly for one message before the first run's flag
+ * write lands; sharing the in-flight promise by message id guarantees the magazine
+ * is decremented exactly once. Returns null for non-special messages.
+ */
+async function _getAmmoSnapshot(message) {
+    const existing = message.getFlag(MODULE_ID, FLAG_AMMO_RESULT);
+    if (existing) return existing;
+    if (_ammoSnapshots.has(message.id)) return _ammoSnapshots.get(message.id);
+
+    const promise = (async () => {
+        const snapshot = await _computeAmmoResult(message);
+        // Only the author persists (and only the author decremented); other clients
+        // render their freshly computed copy until the flag syncs to them.
+        if (snapshot && message.author?.id === game.user.id) {
+            try {
+                await message.setFlag(MODULE_ID, FLAG_AMMO_RESULT, snapshot);
+            } catch (e) { /* can't persist (e.g. permissions) — still render this session */ }
+        }
+        return snapshot;
+    })();
+    _ammoSnapshots.set(message.id, promise);
+    try {
+        return await promise;
+    } finally {
+        _ammoSnapshots.delete(message.id);
+    }
+}
+
 /**
  * Compute the special-ammo result for a weapon-roll chat message: resolve the
  * loaded ammo, (on the author's client) decrement the magazine and run
  * auto-deplete, and return the template data for the chat block. Returns null
- * when the message isn't a special-ammo weapon roll. Called once per message;
- * the result is snapshotted onto the message so re-renders never recompute.
+ * when the message isn't a special-ammo weapon roll. Run once per message via
+ * _getAmmoSnapshot; the result is snapshotted onto the message so re-renders
+ * never recompute.
  */
 async function _computeAmmoResult(message) {
     if (!message.rolls || message.rolls.length === 0) return null;
 
     const roll = message.rolls[0];
-    if (!roll.data || jQuery.isEmptyObject(roll.data)) return null;
+    // DIAGNOSTIC (temporary): trace weapon resolution for roll messages so a "no
+    // special-ammo block" report can be pinpointed from the console.
+    const diag = (reason) => { console.warn(`${MODULE_ID} | special-ammo DIAG: bail — ${reason}`); return null; };
 
-    const itemId = roll.data._id;
-    if (!itemId) return null;
+    if (!roll.data || jQuery.isEmptyObject(roll.data)) return diag(`roll.data is empty (roll not made from a weapon?) data=${JSON.stringify(roll.data)}`);
 
-    // Get actor from speaker
-    const speakerActorId = message.speaker?.actor;
-    if (!speakerActorId) return null;
+    // The roll carries a SNAPSHOT of the weapon whose _id is a throwaway/transient
+    // id (system 2.0.3 builds the roll from a temporary item). The LIVE weapon is
+    // referenced by uuid — this is exactly how the system itself resolves it to
+    // decrement core ammo (roll-builder.js: fromUuid(this.roll.item.uuid)). Resolve
+    // by uuid first; fall back to id/name on the speaker's actor for older rolls.
+    const weaponUuid = roll.data.uuid || roll.data.flags?.starwarsffg?.uuid;
+    let weapon = weaponUuid ? await fromUuid(weaponUuid) : null;
 
-    const speakerTokenId = message.speaker?.token;
-    let actor = speakerTokenId ? game.actors.tokens[speakerTokenId] : null;
-    if (!actor) {
-        actor = game.actors.get(speakerActorId);
+    if (!weapon) {
+        const speaker = message.speaker || {};
+        let actor = null;
+        if (speaker.token) {
+            actor = (speaker.scene ? game.scenes.get(speaker.scene) : null)?.tokens?.get(speaker.token)?.actor
+                 ?? game.actors?.tokens?.[speaker.token] ?? null;
+        }
+        if (!actor && speaker.actor) actor = game.actors.get(speaker.actor);
+        if (actor) {
+            weapon = actor.items.get(roll.data._id)
+                  || (roll.data.name ? actor.items.find((i) => i.type === "weapon" && i.name === roll.data.name) : null);
+        }
     }
-    if (!actor) return null;
 
-    const weapon = actor.items.get(itemId);
-    if (!weapon || weapon.type !== "weapon") return null;
+    if (!weapon || weapon.type !== "weapon") {
+        return diag(`could not resolve live weapon (uuid=${weaponUuid ?? "none"}, id=${roll.data._id}, name=${roll.data.name})`);
+    }
+
+    const actor = weapon.actor;
+    if (!actor) return diag(`weapon "${weapon.name}" has no parent actor`);
 
     const flagData = weapon.getFlag(MODULE_ID, FLAG_SPECIAL_AMMO);
-    if (!flagData?.hasSpecialAmmo) return null;
+    if (!flagData?.hasSpecialAmmo) return diag(`weapon "${weapon.name}" hasSpecialAmmo=${flagData?.hasSpecialAmmo} (flag=${JSON.stringify(flagData)})`);
+
+    // From here this IS a special-ammo weapon, so a chat block is expected; any
+    // bail below is a misconfiguration worth surfacing. (Diagnostic — pinpoints a
+    // "card not rendering" report from the console without flooding it for normal
+    // messages, which already returned above.)
+    const bail = (reason) => {
+        console.warn(`${MODULE_ID} | special-ammo: "${weapon.name}" fired but produced no chat block — ${reason}`);
+        return null;
+    };
 
     const selectedAmmoId = flagData.selectedAmmo;
-    if (!selectedAmmoId) return null;
+    if (!selectedAmmoId) return bail("weapon's selectedAmmo flag is empty (no ammo loaded / selection was cleared)");
 
     const ammoItem = actor.items.get(selectedAmmoId);
-    if (!ammoItem) {
-        log("special_ammo", "Selected ammo item no longer exists in inventory");
-        return null;
-    }
+    if (!ammoItem) return bail(`selected ammo id ${selectedAmmoId} is not in ${actor.name}'s inventory`);
 
     const ammoData = ammoItem.getFlag(MODULE_ID, FLAG_AMMO_DATA);
-    if (!ammoData || !ammoData.canBeUsedAsAmmo) return null;
+    if (!ammoData || !ammoData.canBeUsedAsAmmo) return bail(`ammo "${ammoItem.name}" is not flagged "Can Be Used As Ammo"`);
 
     const rawDescription = ammoItem.system?.description || "";
     const description = rawDescription
         ? await TextEditor.enrichHTML(rawDescription)
         : "";
-    let newCurrent;
-    let outOfAmmo = false;
+    // Magazine count for the loaded ammo. Only the roll's author spends a round,
+    // and only when one is loaded — clamped so it never reads below zero. There is
+    // no "out of ammo" state: an empty magazine simply shows 0/max.
+    let newCurrent = Number(ammoData.ammoCurrent) || 0;
+    if (message.author?.id === game.user.id && newCurrent > 0) {
+        newCurrent -= 1;
+        await ammoItem.setFlag(MODULE_ID, FLAG_AMMO_DATA, {
+            ...ammoData,
+            ammoCurrent: newCurrent,
+        });
+        log("special_ammo", `Used 1 ammo from ${ammoItem.name}. Remaining: ${newCurrent}/${ammoData.ammoMax}`);
 
-    if (ammoData.ammoCurrent <= 0) {
-        outOfAmmo = true;
-        newCurrent = 0;
-        log("special_ammo", `Out of ammo for ${ammoItem.name}`);
-    } else {
-        // Only decrement if this is our own roll (prevent other clients from decrementing too)
-        if (message.author?.id === game.user.id) {
-            newCurrent = ammoData.ammoCurrent - 1;
-            await ammoItem.setFlag(MODULE_ID, FLAG_AMMO_DATA, {
-                ...ammoData,
-                ammoCurrent: newCurrent,
-            });
-            log("special_ammo", `Used 1 ammo from ${ammoItem.name}. Remaining: ${newCurrent}/${ammoData.ammoMax}`);
-
-            // Auto-deplete: if ammo reached 0, decrease item quantity and reset/clear the magazine
-            if (newCurrent <= 0 && game.settings.get(MODULE_ID, SETTING_AUTO_DEPLETE)) {
-                const currentQty = ammoItem.system?.quantity?.value ?? ammoItem.system?.quantity ?? 0;
-                if (currentQty > 1) {
-                    // Decrease quantity by 1, reset ammo to max
-                    await ammoItem.update({ "system.quantity.value": currentQty - 1 });
-                    await ammoItem.setFlag(MODULE_ID, FLAG_AMMO_DATA, {
-                        ...ammoData,
-                        ammoCurrent: ammoData.ammoMax,
-                    });
-                    log("special_ammo", `Depleted magazine for ${ammoItem.name}. Quantity: ${currentQty - 1}. Ammo reset to ${ammoData.ammoMax}.`);
-                } else {
-                    // Last one — decrease quantity to 0
-                    await ammoItem.update({ "system.quantity.value": 0 });
-                    log("special_ammo", `Last magazine depleted for ${ammoItem.name}.`);
-                }
+        // Auto-deplete: when the magazine hits 0, spend a spare and reload to max
+        // (or zero the quantity if it was the last one). The quantity change and
+        // magazine reset are merged into one update() so the item re-renders once.
+        if (newCurrent <= 0 && game.settings.get(MODULE_ID, SETTING_AUTO_DEPLETE)) {
+            const currentQty = ammoItem.system?.quantity?.value ?? ammoItem.system?.quantity ?? 0;
+            if (currentQty > 1) {
+                await ammoItem.update({
+                    "system.quantity.value": currentQty - 1,
+                    flags: { [MODULE_ID]: { [FLAG_AMMO_DATA]: { ...ammoData, ammoCurrent: ammoData.ammoMax } } },
+                });
+                log("special_ammo", `Depleted magazine for ${ammoItem.name}. Quantity: ${currentQty - 1}. Ammo reset to ${ammoData.ammoMax}.`);
+            } else {
+                await ammoItem.update({ "system.quantity.value": 0 });
+                log("special_ammo", `Last magazine depleted for ${ammoItem.name}.`);
             }
-        } else {
-            newCurrent = ammoData.ammoCurrent;
         }
     }
 
@@ -198,7 +249,6 @@ async function _computeAmmoResult(message) {
         ammoCurrent: newCurrent,
         ammoMax: ammoData.ammoMax,
         weaponName: weapon.name,
-        outOfAmmo: outOfAmmo,
         magazinesLeft: magazinesLeft,
         qualities: qualities,
         ammoItemId: ammoItem.id,
@@ -258,12 +308,36 @@ function _getValidAmmoItems(weapon) {
 
     if (allowedNames.length === 0) return [];
 
-    return actor.items.filter((item) => {
-        if (item.type !== "gear") return false;
-        const ammoData = item.getFlag(MODULE_ID, FLAG_AMMO_DATA);
-        if (!ammoData?.canBeUsedAsAmmo) return false;
-        return allowedNames.includes(item.name.toLowerCase());
-    });
+    // Resolve each filter name to a usable ammo item, recording why a named item is
+    // skipped. A gear item qualifies only if it (a) exists in inventory, (b) is type
+    // "gear", and (c) has "Can Be Used As Ammo" enabled on its own sheet — naming it
+    // in the weapon's filter is necessary but NOT sufficient (that flag also stores
+    // the magazine size). The skip reasons surface in the console when starwarsffg
+    // debug logging is on, turning a silently empty dropdown into an explanation.
+    const valid = [];
+    const skipped = [];
+    for (const name of allowedNames) {
+        const named = actor.items.filter((i) => i.name.toLowerCase() === name);
+        if (named.length === 0) {
+            skipped.push(`"${name}" — no item by that name in inventory`);
+            continue;
+        }
+        const gear = named.filter((i) => i.type === "gear");
+        if (gear.length === 0) {
+            skipped.push(`"${name}" — exists but is type '${named[0].type}', not 'gear'`);
+            continue;
+        }
+        const usable = gear.filter((i) => i.getFlag(MODULE_ID, FLAG_AMMO_DATA)?.canBeUsedAsAmmo === true);
+        if (usable.length === 0) {
+            skipped.push(`"${name}" — gear item found but "Can Be Used As Ammo" is not enabled on it`);
+            continue;
+        }
+        valid.push(...usable);
+    }
+    if (skipped.length) {
+        log("special_ammo", `Ammo selector for "${weapon.name}": ${valid.length} usable, ${skipped.length} skipped — ${skipped.join("; ")}`);
+    }
+    return valid;
 }
 
 /**
@@ -558,17 +632,16 @@ async function _injectWeaponAmmoUI(weapon, html) {
     const ammoFilter = flagData.ammoFilter || "";
     let selectedAmmo = flagData.selectedAmmo || "";
 
-    // Validate selected ammo still exists and is valid
+    // If the persisted selection doesn't currently resolve to a valid ammo item,
+    // show it as unselected — but do NOT persist a clear here. Writing during the
+    // render hook can race and wipe the flag (e.g. before the actor's gear items are
+    // ready on initial load, or while an ammoFilter typo transiently matches none).
+    // The selection is only ever cleared by an explicit user choice. Mirrors the
+    // Codex card path; a stale id resolves to no chat block, which is harmless.
     if (selectedAmmo && weapon.actor) {
         const validItems = _getValidAmmoItems(weapon);
-        const stillValid = validItems.find((i) => i.id === selectedAmmo);
-        if (!stillValid) {
+        if (!validItems.find((i) => i.id === selectedAmmo)) {
             selectedAmmo = "";
-            // Persist the cleared selection
-            await weapon.setFlag(MODULE_ID, FLAG_SPECIAL_AMMO, {
-                ...flagData,
-                selectedAmmo: "",
-            });
         }
     }
 
