@@ -1,5 +1,12 @@
 import { log_msg as log } from "../util.js";
 
+// V13 moved these former globals into namespaces; the bare `renderTemplate` /
+// `TextEditor` globals are deprecated and warn until v15. Alias the namespaced
+// versions once — falling back to the global only if the namespace isn't present —
+// so the call sites below stay clean and quiet.
+const renderTemplate = foundry.applications?.handlebars?.renderTemplate ?? globalThis.renderTemplate;
+const TextEditor = foundry.applications?.ux?.TextEditor ?? globalThis.TextEditor;
+
 const MODULE_ID = "ffg-star-wars-enhancements";
 const FLAG_SPECIAL_AMMO = "special-ammo";
 const FLAG_AMMO_DATA = "ammo-data";
