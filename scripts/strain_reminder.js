@@ -30,7 +30,7 @@ export function strain_reminder(created_data) {
                     var actor_name = combatants[x].actor.name;
                     var actor_strain = combatants[x].actor.system.stats.strain.value;
                     var msg = {
-                        type: CONST.CHAT_MESSAGE_TYPES.OTHER,
+                        style: CONST.CHAT_MESSAGE_STYLES.OTHER,
                         content: actor_name + " entered combat wth " + actor_strain + " strain",
                     };
                     log("strain_reminder", "Message content: " + msg["content"]);

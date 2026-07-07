@@ -122,7 +122,7 @@ export function dice_helper() {
                     }
 
                     var msg = {
-                        type: CONST.CHAT_MESSAGE_STYLES.OTHER,
+                        style: CONST.CHAT_MESSAGE_STYLES.OTHER,
                         content:
                             '<button class="effg-die-result" ' +
                             'data-ad="' +
@@ -159,7 +159,10 @@ export function dice_helper() {
         }
     });
 
-    Hooks.on("renderChatMessage", (app, html, messageData) => {
+    // V13 deprecated "renderChatMessage" (jQuery html) in favour of
+    // "renderChatMessageHTML", which hands a native HTMLElement. Normalize back
+    // to jQuery so the .off()/.on() calls below keep working.
+    Hooks.on("renderChatMessageHTML", (app, html, messageData) => {
         /*
         this is slightly less performant than doing the settings check outside of the hook, but if we do it above the
         hook and the user enables it after the game starts, it doesn't actually enable
@@ -167,9 +170,10 @@ export function dice_helper() {
         we can probably overcome that, but it requires a bunch more work and who has time for that?!
          */
         if (game.settings.get("ffg-star-wars-enhancements", "dice-helper")) {
+            html = html instanceof HTMLElement ? $(html) : html;
             // Remove any existing handlers to prevent duplicates
             html.off("click", ".effg-die-result");
-            
+
             // this would need to remain in renderchatmessage since we don't have easy access to the HTML later
             html.on("click", ".effg-die-result", async function (event) {
                 event.preventDefault();

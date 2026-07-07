@@ -120,7 +120,10 @@ export function talent_skill_association_hooks() {
         }
     });
 
-    Hooks.on("renderChatMessage", async (message, html, messageData) => {
+    // V13 deprecated "renderChatMessage" (jQuery html) in favour of
+    // "renderChatMessageHTML", which hands a native HTMLElement. Normalize back
+    // to jQuery so the .find()/.append()/.on() calls below keep working.
+    Hooks.on("renderChatMessageHTML", async (message, html, messageData) => {
         // Inject talent pills into roll messages
         if (!game.settings.get("ffg-star-wars-enhancements", "talent-skill-association")) {
             return;
@@ -128,6 +131,7 @@ export function talent_skill_association_hooks() {
         if (!message.rolls || message.rolls.length === 0) {
             return;
         }
+        html = html instanceof HTMLElement ? $(html) : html;
         if (html.find(".effg-talent-pills").length > 0) {
             return;
         }
