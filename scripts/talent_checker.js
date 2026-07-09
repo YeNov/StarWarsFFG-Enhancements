@@ -179,12 +179,32 @@ function get_ranks(actor) {
     return ranks;
 }
 
+// V14 removed Token#toggleEffect entirely; Actor#toggleStatusEffect only
+// accepts ids registered in CONFIG.statusEffects, which these arbitrary
+// user-picked icon paths are not. Toggle a plain ActiveEffect on the actor
+// directly, matched by icon, to reproduce the old behavior.
+async function toggle_icon_effect(actor, icon_path, active) {
+    let effect = actor?.effects.find((e) => e.img === icon_path);
+    if (active) {
+        if (!effect) {
+            let [created] = await actor.createEmbeddedDocuments("ActiveEffect", [
+                { name: icon_path, img: icon_path },
+            ]);
+            effect = created;
+        }
+    } else if (effect) {
+        await effect.delete();
+        effect = undefined;
+    }
+    return effect;
+}
+
 export async function update_status(token, ranks, icon_path) {
     let active = ranks !== 0;
     if (!window.EffectCounter) {
         // the user doesn't have status icon counters installed; they don't get a count
         log(module_name, "Adding status to token");
-        await token.toggleEffect(icon_path, { active: active });
+        await toggle_icon_effect(token.actor, icon_path, active);
         return;
     }
 
@@ -195,8 +215,7 @@ export async function update_status(token, ranks, icon_path) {
         if (!effect) {
             // the status icon counter module's modern API requires the effect to
             // already exist on the actor before its counter can be addressed
-            await token.toggleEffect(icon_path, { active: true });
-            effect = token.actor?.effects.find((e) => e.img === icon_path);
+            effect = await toggle_icon_effect(token.actor, icon_path, true);
         }
         await effect?.statusCounter?.setValue(ranks);
     } else if (effect?.statusCounter) {
