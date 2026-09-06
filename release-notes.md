@@ -4,6 +4,8 @@
   update no longer replaces this module with the upstream one.
   - Existing installs keep whatever manifest URL they were installed with. Reinstall once from
     `https://github.com/YeNov/StarWarsFFG-Enhancements/releases/latest/download/module.json` to switch over.
+- FIX: The required-system link now points at the `YeNov/StarWarsFFG` fork instead of a stale `raw.githubusercontent`
+  URL on the upstream system's `master` branch, so Foundry no longer offers to install the upstream system over it.
 
 `3.0.0` - 2026-03-28
 - Improvement: [Talent Reminders!](https://github.com/wrycu/StarWarsFFG-Enhancements/pull/232)

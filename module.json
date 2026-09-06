@@ -40,10 +40,10 @@
         "systems": [
             {
                 "id": "starwarsffg",
-                "manifest": "https://raw.githubusercontent.com/StarWarsFoundryVTT/StarWarsFFG/master/system.json",
+                "manifest": "https://github.com/YeNov/StarWarsFFG/releases/latest/download/system.json",
                 "compatability": {
                     "minimum": "2.0.0",
-                    "verified": "2.0.2"
+                    "verified": "2.1.2"
                 }
             }
         ],
