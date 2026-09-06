@@ -1,4 +1,10 @@
 
+`3.1.0` - 2026-09-06
+- FIX: Update checks now point at this fork instead of `wrycu/StarWarsFFG-Enhancements`, so accepting a Foundry
+  update no longer replaces this module with the upstream one.
+  - Existing installs keep whatever manifest URL they were installed with. Reinstall once from
+    `https://github.com/YeNov/StarWarsFFG-Enhancements/releases/latest/download/module.json` to switch over.
+
 `3.0.0` - 2026-03-28
 - Improvement: [Talent Reminders!](https://github.com/wrycu/StarWarsFFG-Enhancements/pull/232)
 - Improvement: [special ammo feature](https://github.com/wrycu/StarWarsFFG-Enhancements/wiki/Special-Ammo)
