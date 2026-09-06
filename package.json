@@ -8,14 +8,14 @@
     },
     "repository": {
         "type": "git",
-        "url": "git+https://github.com/wrycu/StarWarsFFG-Enhancements.git"
+        "url": "git+https://github.com/YeNov/StarWarsFFG-Enhancements.git"
     },
     "author": "Wrycu",
     "license": "LICENSE",
     "bugs": {
-        "url": "https://github.com/wrycu/StarWarsFFG-Enhancements/issues"
+        "url": "https://github.com/YeNov/StarWarsFFG-Enhancements/issues"
     },
-    "homepage": "https://github.com/wrycu/StarWarsFFG-Enhancements",
+    "homepage": "https://github.com/YeNov/StarWarsFFG-Enhancements",
     "devDependencies": {
         "cypress": "^12.5.1",
         "prettier": "2.8.4"
