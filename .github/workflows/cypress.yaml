@@ -18,14 +18,14 @@ jobs:
     # This will gate running the tests behind an approver reviewing the code for
     # abuse. Duplicating the secrets in this environment is not required.
     forks-only:
-        if: github.event.pull_request.head.repo.full_name != 'wrycu/StarWarsFFG-Enhancements'
+        if: github.event.pull_request.head.repo.full_name != github.repository
         uses: ./.github/workflows/cypress-impl.yaml
         secrets: inherit
         with:
             environment: requires-approval
 
-    # When running for a branch on the upstream repository, don't use an environment.
+    # When running for a branch on this repository itself, don't use an environment.
     upstream-only:
-        if: github.event.pull_request.head.repo.full_name == 'wrycu/StarWarsFFG-Enhancements'
+        if: github.event.pull_request.head.repo.full_name == github.repository
         uses: ./.github/workflows/cypress-impl.yaml
         secrets: inherit
