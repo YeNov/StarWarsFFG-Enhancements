@@ -87,41 +87,14 @@ services:
               protocol: tcp
 ```
 
-## Configuring Github Actions
+## Continuous integration
 
-> :warning: The Github Actions use [pull_request_target](https://securitylab.github.com/research/github-actions-preventing-pwn-requests/) and have been carefully configured to protect the FoundryVTT credentials by requiring approval from untrusted forks prior to running tests. If emulating this repository, be very careful.
+This fork does not run the Cypress tests in CI. The workflow that did (`.github/workflows/cypress.yaml`) required
+`FOUNDRY_USERNAME`, `FOUNDRY_PASSWORD` and `FOUNDRY_LICENSE_KEY` repository secrets holding a FoundryVTT account, which
+this fork does not have, so it failed within seconds on every pull request. It was removed rather than left permanently
+red.
 
-The Cypress tests are configured to run on pull requests (see `.github/workflows/cypress.yaml`). For PRs from a branch within the repository, they're automatically run. For PRs from a fork, each run must be approved by a contributor (this is to protect the FoundryVTT credentials). Unfortunately, both jobs show up on all PRs, but only one is run per PR.
-
-The repository requires some manual configuration. Follow these steps:
-
-### 1. Actions secrets and variables
-
-Configure the FoundryVTT user credentials and license key to launch FoundryVTT.
-
-1. Navigate to the repository > Settings > Secrets and variables > Actions
-2. Repeat following for `FOUNDRY_LICENSE_KEY`, `FOUNDRY_PASSWORD`, and `FOUNDRY_USERNAME`:
-    1. Click "New repository secret"
-    2. Populate the secret name and its value
-    3. Click "Add secret"
-
-### 2. Environment
-
-Configure the `requires-approval` environment to require specific approvers to run the Cypress tests from a fork.
-
-1. Navigate to the repository > Settings > Environments
-2. Click "New environment"
-3. Name it exactly `requires-approval` and click "Configure environment"
-4. Check "Requires reviewers" and specify who is allowed to approve
-5. Click "Save protection rules"
-
-Note: No environment variables need to be configured here. They're inherited from the repository global variables.
-
-### 3. Actions permissions (Optional)
-
-Review the repository Actions permissions. The defaults are sensible, but these settings provide optional hardening configuration.
-
-1. Navigate to the repository > Settings > Actions > General
-2. Review all settings, specifically "Fork pull request workflows from outside collaborators"
-   (this is separate to our `requires-approval` environment)
-3. Consider hardening "Workflow permissions"
+Run the suite locally as described above. To restore CI, recover the workflows from git history
+(`git log --diff-filter=D -- .github/workflows/cypress.yaml`) and configure the three secrets, plus a `requires-approval`
+environment with reviewers — the workflow used `pull_request_target`, so without that gate a pull request from any fork
+could read those credentials.

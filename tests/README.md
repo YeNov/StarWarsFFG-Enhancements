@@ -25,11 +25,11 @@ To test locally:
 
 > :information_source: To simplify this setup, use Docker Compose and run the Cypress end-to-end tests which will result in a FoundryVTT instance with all required systems/modules and a test world. See [cypress](../cypress/README.md) for more details.
 
-## Relationship to Cypress in CI
+## Relationship to Cypress
 
 Quench is a FoundryVTT module that is loaded into the game along side the target module.
 The target module exposes tests, and Quench provides a UI and API to run these tests.
 To execute the tests, FoundryVTT itself needs to be running.
 
-To support running tests within CI, we use Cypress to install and activate Quench.
-Then, we run the module tests via Quench's API and report back the entire result via a single Cypress test.
+Cypress can install and activate Quench, run the module tests via Quench's API, and report the entire result as a single
+Cypress test. This fork runs that locally only; there is no CI job for it. See [cypress](../cypress/README.md).

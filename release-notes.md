@@ -1,9 +1,4 @@
-
-`3.1.0` - 2026-09-06
-- FIX: Update checks now point at this fork instead of `wrycu/StarWarsFFG-Enhancements`, so accepting a Foundry
-  update no longer replaces this module with the upstream one.
-  - Existing installs keep whatever manifest URL they were installed with. Reinstall once from
-    `https://github.com/YeNov/StarWarsFFG-Enhancements/releases/latest/download/module.json` to switch over.
+`3.1.1` - 2026-09-07
 - FIX: The required-system link now points at the `YeNov/StarWarsFFG` fork instead of a stale `raw.githubusercontent`
   URL on the upstream system's `master` branch, so Foundry no longer offers to install the upstream system over it.
 - FIX: The dice helper no longer goes silent when several journals share the configured name. Importing a journal
@@ -15,6 +10,20 @@
   renamed, and when the `dice helper data` setting is pointed at a different journal and back again.
 - FIX: Dice helper journal creation is now limited to the GM, so players no longer attempt a document creation they
   have no permission for.
+- Internal: Removed the FoundryVTT integration test workflow. It required `FOUNDRY_USERNAME`, `FOUNDRY_PASSWORD` and
+  `FOUNDRY_LICENSE_KEY` secrets that this fork does not hold, so it failed within seconds on every pull request. The
+  Cypress suite itself is unchanged and still runs locally (see `cypress/README.md`).
+- Internal: Dropped the prettier CI gate. 62 files in the tree do not match the configured style, so the check was red
+  regardless of what a change touched. `.prettierrc` and the devDependency stay for local use.
+- Internal: Release values (`version`, `url`, `manifest`, `download`) are now stamped into the manifest by the release
+  workflow, replacing a token-replacement step that had silently become a no-op.
+- Internal: The README and `package.json` metadata point at this fork.
+
+`3.1.0` - 2026-09-06
+- FIX: Update checks now point at this fork instead of `wrycu/StarWarsFFG-Enhancements`, so accepting a Foundry
+  update no longer replaces this module with the upstream one.
+  - Existing installs keep whatever manifest URL they were installed with. Reinstall once from
+    `https://github.com/YeNov/StarWarsFFG-Enhancements/releases/latest/download/module.json` to switch over.
 
 `3.0.0` - 2026-03-28
 - Improvement: [Talent Reminders!](https://github.com/wrycu/StarWarsFFG-Enhancements/pull/232)
