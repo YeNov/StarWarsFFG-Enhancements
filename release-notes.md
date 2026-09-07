@@ -6,6 +6,15 @@
     `https://github.com/YeNov/StarWarsFFG-Enhancements/releases/latest/download/module.json` to switch over.
 - FIX: The required-system link now points at the `YeNov/StarWarsFFG` fork instead of a stale `raw.githubusercontent`
   URL on the upstream system's `master` branch, so Foundry no longer offers to install the upstream system over it.
+- FIX: The dice helper no longer goes silent when several journals share the configured name. Importing a journal
+  creates a new document rather than replacing the existing one, so the helper now reads the first match that
+  actually has pages instead of whichever happened to sort first, and warns when duplicates exist.
+- FIX: A dice helper journal that exists but has no pages is now repaired with the default page on startup, instead
+  of being skipped forever because an entry with that name already existed.
+- FIX: The dice helper cache is now dropped when the whole journal is imported or replaced, when the journal is
+  renamed, and when the `dice helper data` setting is pointed at a different journal and back again.
+- FIX: Dice helper journal creation is now limited to the GM, so players no longer attempt a document creation they
+  have no permission for.
 
 `3.0.0` - 2026-03-28
 - Improvement: [Talent Reminders!](https://github.com/wrycu/StarWarsFFG-Enhancements/pull/232)
