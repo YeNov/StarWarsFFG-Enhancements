@@ -1,7 +1,9 @@
 import { batch as datapad_batch } from "./datapads.test.js";
+import { batch as dice_helper_batch } from "./dice_helper.test.js";
 
 function registerQuenchTests(quench) {
     quench.registerBatch("ffg-star-wars-enhancements.datapads", datapad_batch);
+    quench.registerBatch("ffg-star-wars-enhancements.dice_helper", dice_helper_batch);
 }
 
 export function init() {

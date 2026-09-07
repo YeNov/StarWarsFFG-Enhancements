@@ -4,6 +4,11 @@ let feature_name = "dice_helper";
 let _cachedData = null;
 let _cacheJournalName = null;
 
+export function invalidate_cache() {
+    _cachedData = null;
+    _cacheJournalName = null;
+}
+
 export function init() {
     log(feature_name, "Initializing");
     game.settings.register("ffg-star-wars-enhancements", "dice-helper", {
@@ -21,6 +26,9 @@ export function init() {
         config: true,
         type: String,
         default: "dice_helper",
+        // the cache is keyed on the journal name, so pointing the setting at a different journal
+        // (or back at a previous one) has to drop it rather than rely on the key matching
+        onChange: () => invalidate_cache(),
     });
     log(feature_name, "Initialized");
 }
@@ -40,14 +48,29 @@ export function dice_helper() {
     game.socket.on("module.ffg-star-wars-enhancements", socket_listener);
 
     // Invalidate cached data only when the configured dice helper journal is modified
-    const invalidateIfDiceHelperJournal = (page) => {
-        if (_cachedData && page?.parent?.name === _cacheJournalName) {
-            _cachedData = null;
+    const invalidateIfDiceHelperJournal = (document, changes) => {
+        if (!_cachedData) {
+            return;
+        }
+        // a rename can move a journal in or out of the configured name, and the document already
+        // carries the new name by the time we see it, so drop the cache for any rename at all
+        if (changes && "name" in changes) {
+            invalidate_cache();
+            return;
+        }
+        // page hooks pass the page (its entry is the parent), entry hooks pass the entry itself
+        if (document?.parent?.name === _cacheJournalName || document?.name === _cacheJournalName) {
+            invalidate_cache();
         }
     };
     Hooks.on("updateJournalEntryPage", invalidateIfDiceHelperJournal);
     Hooks.on("createJournalEntryPage", invalidateIfDiceHelperJournal);
     Hooks.on("deleteJournalEntryPage", invalidateIfDiceHelperJournal);
+    // pages created as part of their parent entry (i.e. an import) do not fire the page hooks above,
+    // and a new or deleted entry changes which journal the name resolves to
+    Hooks.on("createJournalEntry", invalidateIfDiceHelperJournal);
+    Hooks.on("updateJournalEntry", invalidateIfDiceHelperJournal);
+    Hooks.on("deleteJournalEntry", invalidateIfDiceHelperJournal);
 
     // Use document-level event delegation for button clicks (works after page refresh)
     $(document).off("click", ".effg-die-result"); // Remove any existing handlers
@@ -386,7 +409,7 @@ function is_supported_skill(skill, data) {
     return result;
 }
 
-function load_data() {
+export function load_data() {
     /**
      * Load dice helper data from the Journal
      * Returns a dict in the format of:
@@ -412,21 +435,39 @@ function load_data() {
         return _cachedData;
     }
 
-    let journal = game.journal.filter((journal) => journal.name === journal_name);
+    let candidates = game.journal.filter((journal) => journal.name === journal_name);
 
-    if (journal.length <= 0) {
-        ui.notifications.warn("Failed to find journal - make sure it's created or something");
+    if (candidates.length <= 0) {
+        ui.notifications.warn(
+            `Dice helper: no journal named "${journal_name}" exists. Check the "dice helper data" module setting.`
+        );
         log(feature_name, "Unable to find journal with the name " + journal_name);
+        return {};
+    }
+
+    // importing a journal creates a new document rather than replacing an existing one, so several
+    // entries can share the same name. Prefer one that actually holds pages over whichever sorts first.
+    let journal = candidates.find((candidate) => candidate.pages.contents.length > 0);
+    if (candidates.length > 1) {
+        log(
+            feature_name,
+            `Found ${candidates.length} journals named ${journal_name}; using the first one that has pages`
+        );
+        ui.notifications.warn(
+            `Dice helper: ${candidates.length} journals are named "${journal_name}". Delete the duplicates to avoid ambiguity.`
+        );
+    }
+
+    if (journal === undefined) {
+        ui.notifications.warn(
+            `Dice helper: the journal "${journal_name}" has no pages. Delete it and reload to have it recreated.`
+        );
+        log(feature_name, "Unable to find journal with correct pages");
         return {};
     }
     log(feature_name, "Found journal " + journal_name);
 
-    let journal_pages = journal[0].pages.contents;
-    if (!journal_pages || journal_pages.length <= 0) {
-        ui.notifications.warn("Failed to find journal with correct pages - make sure it's created or something");
-        log(feature_name, "Unable to find journal with correct pages");
-        return {};
-    }
+    let journal_pages = journal.pages.contents;
 
     let jsondata = {};
     for (let page of journal_pages) {
@@ -482,6 +523,32 @@ function load_data() {
     return jsondata;
 }
 
+async function default_page_data() {
+    /**
+     * Build the page holding the shipped dice helper suggestions, translated where we have a translation
+     */
+    // let's search for a translated one (will probably show an error in console, can't avoid it)
+    let jsonFilePath = "modules/ffg-star-wars-enhancements/content/dice_helper_" + game.i18n.lang + ".json";
+    let logFileStatus = "translated";
+    await fetch(jsonFilePath).then((response) => {
+        if (!response.ok) {
+            logFileStatus = "default";
+            jsonFilePath = "modules/ffg-star-wars-enhancements/content/dice_helper.json";
+        }
+    });
+
+    log(feature_name, `using ${logFileStatus} dice helper content`);
+    let suggestions = await $.getJSON(jsonFilePath);
+    return {
+        name: "dice_helper",
+        type: "text",
+        text: {
+            content: JSON.stringify(suggestions),
+            format: CONST.JOURNAL_ENTRY_PAGE_FORMATS.HTML,
+        },
+    };
+}
+
 export async function create_and_populate_journal() {
     // if the feature is not enabled, don't do anything
     log(feature_name, "checking status of journal");
@@ -489,42 +556,36 @@ export async function create_and_populate_journal() {
         return;
     }
 
+    // only the GM may create world documents, and we only need one client to do this
+    if (!game.user.isGM) {
+        return;
+    }
+
     // otherwise check to see if the journal already exists
     let journal_name = game.settings.get("ffg-star-wars-enhancements", "dice-helper-data");
-    let journal = game.journal.filter((journal) => journal.name === journal_name);
+    let candidates = game.journal.filter((journal) => journal.name === journal_name);
 
-    if (journal.length === 0) {
-        // journal doesn't exist
-
-        // let's search for a translated one (will probably show an error in console, can't avoid it)
-        let jsonFilePath = "modules/ffg-star-wars-enhancements/content/dice_helper_" + game.i18n.lang + ".json";
-        let logFileStatus = "translated";
-        await fetch(jsonFilePath).then((response) => {
-            if (!response.ok) {
-                logFileStatus = "default";
-                jsonFilePath = "modules/ffg-star-wars-enhancements/content/dice_helper.json";
-            }
-        });
-
-        // then create journal
-        log(feature_name, `creating ${logFileStatus} journal`);
-        let suggestions = await $.getJSON(jsonFilePath);
-        let data = {
-            name: journal_name,
-            pages: [
-                {
-                    name: "dice_helper",
-                    type: "text",
-                    text: {
-                        content: JSON.stringify(suggestions),
-                        format: CONST.JOURNAL_ENTRY_PAGE_FORMATS.HTML,
-                    },
-                },
-            ],
-            ownership: {
-                default: CONST.DOCUMENT_OWNERSHIP_LEVELS.OBSERVER,
-            },
-        };
-        JournalEntry.create(data);
+    // an entry with no pages holds no data, so it is no more usable than a missing one
+    if (candidates.some((candidate) => candidate.pages.contents.length > 0)) {
+        return;
     }
+
+    let page = await default_page_data();
+
+    if (candidates.length > 0) {
+        // the journal exists but is empty - repair it rather than leaving the feature silently broken
+        log(feature_name, "journal exists but has no pages, adding the default page");
+        await candidates[0].createEmbeddedDocuments("JournalEntryPage", [page]);
+        return;
+    }
+
+    // then create journal
+    log(feature_name, "creating journal");
+    await JournalEntry.create({
+        name: journal_name,
+        pages: [page],
+        ownership: {
+            default: CONST.DOCUMENT_OWNERSHIP_LEVELS.OBSERVER,
+        },
+    });
 }
