@@ -8,6 +8,10 @@
   renamed, and when the `dice helper data` setting is pointed at a different journal and back again.
 - FIX: Dice helper journal creation is now limited to the GM, so players no longer attempt a document creation they
   have no permission for.
+- FIX: Chat messages created by the dice helper and the strain reminder no longer fail schema validation on Foundry
+  v13. Both passed the numeric `CHAT_MESSAGE_STYLES`/`CHAT_MESSAGE_TYPES` constant as the message `type`, which v13
+  reads as a document subtype, so every dice helper button message and strain reminder was rejected with
+  `"0" is not a valid type for the ChatMessage Document class`.
 - Internal: Removed the FoundryVTT integration test workflow. It required `FOUNDRY_USERNAME`, `FOUNDRY_PASSWORD` and
   `FOUNDRY_LICENSE_KEY` secrets that this fork does not hold, so it failed within seconds on every pull request. The
   Cypress suite itself is unchanged and still runs locally (see `cypress/README.md`).
