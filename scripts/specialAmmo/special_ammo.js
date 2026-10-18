@@ -79,6 +79,9 @@ export function hooks() {
         }
     });
 
+    // The system asks this before it checks or spends a weapon's own ammo.
+    Hooks.on("ffgAmmoSource", _supplyLoadedAmmo);
+
     // Codex weapon cards (starwarsffg system). The Codex sheet renders only the
     // CORE ammo chip (system.ammo); the special-ammo selector + magazine are
     // ours to inject. These ApplicationV2 sheets hand the render callback a
@@ -96,6 +99,61 @@ export function hooks() {
             }
         });
     }
+}
+
+/**
+ * The special ammo loaded into a weapon: the selected gear item and its ammo-data,
+ * or null when the weapon has none loaded. This is what a shot spends from (see
+ * _computeAmmoResult), so the system's ammo gate is answered from it too.
+ */
+function _getLoadedAmmo(weapon) {
+    if (!weapon || weapon.type !== "weapon") return null;
+
+    const actor = weapon.actor;
+    if (!actor) return null;
+
+    const flagData = weapon.getFlag(MODULE_ID, FLAG_SPECIAL_AMMO);
+    if (!flagData?.hasSpecialAmmo) return null;
+
+    const selectedAmmoId = flagData.selectedAmmo;
+    if (!selectedAmmoId) return null;
+
+    const ammoItem = actor.items.get(selectedAmmoId);
+    if (!ammoItem) {
+        log("special_ammo", "Selected ammo item no longer exists in inventory");
+        return null;
+    }
+
+    const ammoData = ammoItem.getFlag(MODULE_ID, FLAG_AMMO_DATA);
+    if (!ammoData || !ammoData.canBeUsedAsAmmo) return null;
+
+    return { ammoItem, ammoData };
+}
+
+/**
+ * Whether the loaded ammo has a round for the next shot, under the same rule the
+ * spend in _computeAmmoResult follows: a round is left in the clip, or (with
+ * auto-deplete) an empty clip is refilled from the spares behind it.
+ */
+function _hasRoundReady(ammoItem, ammoData, autoDeplete) {
+    const cur = Number(ammoData.ammoCurrent) || 0;
+    const max = Number(ammoData.ammoMax) || 0;
+    const qty = Number(ammoItem.system?.quantity?.value ?? ammoItem.system?.quantity ?? 0) || 0;
+    return cur > 0 || (autoDeplete && max > 0 && qty > 0);
+}
+
+/**
+ * Answer the starwarsffg system's ffgAmmoSource hook. A loaded special ammo is the
+ * weapon's magazine: the system then gates the shot on it and leaves the weapon's
+ * own counter (Limited Ammo quality or Enable Ammo) alone, instead of emptying that
+ * counter while the clip reloads from spares.
+ */
+function _supplyLoadedAmmo(item, source) {
+    if (!game.settings.get(MODULE_ID, SETTING_ENABLE)) return;
+    const loaded = _getLoadedAmmo(item);
+    if (!loaded) return;
+    source.provided = true;
+    source.canFire = _hasRoundReady(loaded.ammoItem, loaded.ammoData, game.settings.get(MODULE_ID, SETTING_AUTO_DEPLETE));
 }
 
 // In-flight snapshot computations keyed by message id (see _getAmmoSnapshot).
@@ -167,25 +225,9 @@ async function _computeAmmoResult(message) {
         }
     }
 
-    if (!weapon || weapon.type !== "weapon") return null;
-
-    const actor = weapon.actor;
-    if (!actor) return null;
-
-    const flagData = weapon.getFlag(MODULE_ID, FLAG_SPECIAL_AMMO);
-    if (!flagData?.hasSpecialAmmo) return null;
-
-    const selectedAmmoId = flagData.selectedAmmo;
-    if (!selectedAmmoId) return null;
-
-    const ammoItem = actor.items.get(selectedAmmoId);
-    if (!ammoItem) {
-        log("special_ammo", "Selected ammo item no longer exists in inventory");
-        return null;
-    }
-
-    const ammoData = ammoItem.getFlag(MODULE_ID, FLAG_AMMO_DATA);
-    if (!ammoData || !ammoData.canBeUsedAsAmmo) return null;
+    const loaded = _getLoadedAmmo(weapon);
+    if (!loaded) return null;
+    const { ammoItem, ammoData } = loaded;
 
     const rawDescription = ammoItem.system?.description || "";
     const description = rawDescription
