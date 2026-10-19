@@ -1,3 +1,10 @@
+`Unreleased`
+- FIX: A weapon with special ammo loaded no longer stops firing with "Not enough ammo!" once its own Limited Ammo (or
+  Enable Ammo) counter runs out while magazines are still in the inventory. The loaded special ammo is now the
+  weapon's magazine: each shot is checked against it, and the weapon's own counter is left alone while it is loaded.
+  A loaded special ammo with no rounds and no spare magazines left now refuses the shot.
+  - Needs the next starwarsffg release as well; with an older system the weapon keeps spending its own counter.
+
 `3.1.1` - 2026-09-07
 - FIX: The dice helper no longer goes silent when several journals share the configured name. Importing a journal
   creates a new document rather than replacing the existing one, so the helper now reads the first match that
